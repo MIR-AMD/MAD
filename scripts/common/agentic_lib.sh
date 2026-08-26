@@ -198,6 +198,20 @@ resolve_trace_source() {
 }
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Profile hash computation for cache invalidation
+# --------------------------------------------------------------------------
+# Compute deterministic hash of profile JSON parameters. Returns 8-char hex.
+_profile_hash() {
+    local profile_json="$1"
+    [ -f "$profile_json" ] || { echo "00000000"; return; }
+    # Hash the profile JSON content for change detection
+    local py="${AIPERF_PYTHON:-python3}"
+    local hash
+    hash=$("$py" -c "import json,hashlib; d=json.load(open('$profile_json')); print(hashlib.sha256(json.dumps(d,sort_keys=True).encode()).hexdigest()[:8])" 2>/dev/null)
+    [ -n "$hash" ] && echo "$hash" || echo "00000000"
+}
+
 # Profile corpus materialization (WL_SOURCE=profile) + context compatibility
 # --------------------------------------------------------------------------
 # Generate a weka_trace corpus for one workload profile into
@@ -208,7 +222,9 @@ materialize_corpus() {
     local name="$1" profile_json="$2"
     local py="${AIPERF_PYTHON:-python3}"
     [ -f "$profile_json" ] || agentic_die "materialize_corpus($name): profile JSON not found: $profile_json"
-    CORPUS_DIR="${SUITE_CORPUS_DIR}/${name}"
+    # Include profile hash in corpus directory to auto-detect changes
+    local prof_hash=$(_profile_hash "$profile_json")
+    CORPUS_DIR="${SUITE_CORPUS_DIR}/${name}-${prof_hash}"
     if [ -d "$CORPUS_DIR" ] && [ -n "$(ls -A "$CORPUS_DIR" 2>/dev/null)" ] && [ "${SUITE_CORPUS_FORCE:-0}" != "1" ]; then
         agentic_log "corpus for '$name' already present at $CORPUS_DIR (SUITE_CORPUS_FORCE=1 to regen)"
     else
