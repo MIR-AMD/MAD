@@ -72,6 +72,46 @@ if [ "$_is_dry" = "1" ]; then
   RESULT_DIR             : ${RESULT_DIR}
   SUITE_CORPUS_DIR       : ${SUITE_CORPUS_DIR}
 EOF
+
+    # DRY_RUN: validate workload config resolution for all workloads
+    echo ""
+    agentic_log "[DRY_RUN] validating workload configurations..."
+    _dry_fail=0
+    for _wl_name in $SUITE_WORKLOAD_NAMES; do
+        _profile_json="${SUITE_CORPUS_DIR}/${_wl_name}.profile.json"
+        _wl_shell="$("$SUITE_PY" "$CONFIG_TOOL" "${_cfg_args[@]}" --workload "$_wl_name" \
+                     --profile-out "$_profile_json" --emit-workload-shell 2>/dev/null)" || {
+            agentic_err "[DRY_RUN] workload '$_wl_name' config resolution failed"
+            _dry_fail=1
+            continue
+        }
+        eval "$_wl_shell"
+
+        if [ "$WL_SOURCE" = "profile" ]; then
+            # For profile workloads, validate that the profile JSON was written and is valid
+            if [ -f "$WL_PROFILE_FILE" ] && "$SUITE_PY" -c "import json; json.load(open('$WL_PROFILE_FILE'))" 2>/dev/null; then
+                agentic_log "[DRY_RUN] ✓ '$_wl_name' profile validated ($WL_PROFILE_FILE)"
+            else
+                agentic_err "[DRY_RUN] ✗ '$_wl_name' profile invalid or missing: $WL_PROFILE_FILE"
+                _dry_fail=1
+            fi
+        elif [ "$WL_SOURCE" = "corpus" ]; then
+            # For corpus workloads, validate input_dir path
+            if [ -n "$WL_INPUT_DIR" ] && [ -d "$WL_INPUT_DIR" ]; then
+                agentic_log "[DRY_RUN] ✓ '$_wl_name' corpus dir exists ($WL_INPUT_DIR)"
+            else
+                agentic_err "[DRY_RUN] ✗ '$_wl_name' corpus input_dir not found: ${WL_INPUT_DIR:-<empty>}"
+                _dry_fail=1
+            fi
+        else
+            agentic_log "[DRY_RUN] ✓ '$_wl_name' (source=${WL_SOURCE:-unknown})"
+        fi
+    done
+
+    if [ "$_dry_fail" -ne 0 ]; then
+        agentic_die "[DRY_RUN] validation FAILED - fix config errors before submission"
+    fi
+    agentic_log "[DRY_RUN] validation PASSED"
 else
     install_agentic_deps
     wait_for_router_ready
