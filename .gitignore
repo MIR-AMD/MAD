@@ -92,3 +92,6 @@ run_directory/
 perf_metrics_*.jsonl
 scripts/jax-maxtext/output/
 scripts/jax-maxdiffusion/output/
+
+# Local campaign standups/reports. Do not merge.
+scripts/vllm_dissag/reports/

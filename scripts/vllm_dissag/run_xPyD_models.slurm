@@ -88,6 +88,8 @@ VALID_MODELS=( \
     "Qwen3-32B" \
     "Qwen3-30B-A3B" \
     "GLM-5.1-FP8" \
+    "DeepSeek-V4-Flash-FP8" \
+    "DeepSeek-V4-Pro-FP8" \
 )
 
 # Models allowed for CONNECTOR=moriio WIDE_EP=1 (MoRI-EP; legacy RUN_MORI=1)
@@ -96,6 +98,8 @@ MORI_EP_VALID_MODELS=( \
     "DeepSeek-V3-5layer" \
     "DeepSeek-R1" \
     "GLM-5.1-FP8" \
+    "DeepSeek-V4-Flash-FP8" \
+    "DeepSeek-V4-Pro-FP8" \
 )
 
 # Models allowed for CONNECTOR=rixl WIDE_EP=1 EP_BACKEND=deepep (legacy RUN_DEEPEP=1)
@@ -182,7 +186,7 @@ WIDE_EP="${WIDE_EP:-0}"
 # in TP mode is unsupported — the TP argv would double the model's own
 # --compilation-config and drop the mandatory +quant_fp8 op. Reject early.
 # GLM-5.1-FP8 (MLA+DSA) is validated only under MoRI-EP wideEP; moriio+TP is untested.
-WIDE_EP_ONLY_MODELS=( "DeepSeek-V3" "DeepSeek-V3-5layer" "DeepSeek-R1" "GLM-5.1-FP8" )
+WIDE_EP_ONLY_MODELS=( "DeepSeek-V3" "DeepSeek-V3-5layer" "DeepSeek-R1" "GLM-5.1-FP8" "DeepSeek-V4-Flash-FP8" "DeepSeek-V4-Pro-FP8" )
 model_is_wide_ep_only() {
   local m="$1"
   for x in "${WIDE_EP_ONLY_MODELS[@]}"; do [[ "$m" == "$x" ]] && return 0; done
@@ -646,6 +650,24 @@ docker run --rm \
     ${NIAH_WARMUP:+-e NIAH_WARMUP=$NIAH_WARMUP} \
     ${NIAH_MAXTOK:+-e NIAH_MAXTOK=$NIAH_MAXTOK} \
     ${NIAH_TIMEOUT:+-e NIAH_TIMEOUT=$NIAH_TIMEOUT} \
+    ${NIAH_METHOD:+-e NIAH_METHOD=$NIAH_METHOD} \
+    ${NIAH_LIST_PRIME:+-e NIAH_LIST_PRIME=$NIAH_LIST_PRIME} \
+    ${NIAH_STOP:+-e NIAH_STOP=$NIAH_STOP} \
+    ${NIAH_LOGPROBS:+-e NIAH_LOGPROBS=$NIAH_LOGPROBS} \
+    ${NIAH_DS_WRAP:+-e NIAH_DS_WRAP=$NIAH_DS_WRAP} \
+    ${NIAH_MIN_TOKENS:+-e NIAH_MIN_TOKENS=$NIAH_MIN_TOKENS} \
+    ${PROXY_ROUTE_DP:+-e PROXY_ROUTE_DP=$PROXY_ROUTE_DP} \
+    ${PROXY_MAX_CONCURRENCY:+-e PROXY_MAX_CONCURRENCY=$PROXY_MAX_CONCURRENCY} \
+    ${PROXY_LOG_LEVEL:+-e PROXY_LOG_LEVEL=$PROXY_LOG_LEVEL} \
+    ${DSV4_ENABLE_HMA:+-e DSV4_ENABLE_HMA=$DSV4_ENABLE_HMA} \
+    ${DSV4_SKIP_INDEXER_REGISTER:+-e DSV4_SKIP_INDEXER_REGISTER=$DSV4_SKIP_INDEXER_REGISTER} \
+    ${DSV4_TRANSFER_ATTN:+-e DSV4_TRANSFER_ATTN=$DSV4_TRANSFER_ATTN} \
+    ${DSV4_HMA_UPSTREAM_GEOM:+-e DSV4_HMA_UPSTREAM_GEOM=$DSV4_HMA_UPSTREAM_GEOM} \
+    ${DSV4_CHUNK_HMA_FIX:+-e DSV4_CHUNK_HMA_FIX=$DSV4_CHUNK_HMA_FIX} \
+    ${DSV4_EAGER:+-e DSV4_EAGER=$DSV4_EAGER} \
+    ${DSV4_WRITE_DIAG:+-e DSV4_WRITE_DIAG=$DSV4_WRITE_DIAG} \
+    ${DSV4_KV_HASH:+-e DSV4_KV_HASH=$DSV4_KV_HASH} \
+    ${STEP_SEC_PER_TOK:+-e STEP_SEC_PER_TOK=$STEP_SEC_PER_TOK} \
     ${SHAPE_WARMUP:+-e SHAPE_WARMUP=$SHAPE_WARMUP} \
     ${USE_INDUCTOR_GRAPH_PARTITION:+-e USE_INDUCTOR_GRAPH_PARTITION=$USE_INDUCTOR_GRAPH_PARTITION} \
     ${PREFILL_CUDAGRAPH_MODE:+-e PREFILL_CUDAGRAPH_MODE=$PREFILL_CUDAGRAPH_MODE} \

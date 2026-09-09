@@ -54,6 +54,8 @@ path).
 | `DeepSeek-V3` | MoE | 3, 4 (wideEP only) | validated serving (moriio+MoRI-EP) |
 | `DeepSeek-V3-5layer` | MoE | 3, 4 (wideEP only) | smoke/dev variant |
 | `DeepSeek-R1` | MoE | 3, 4 (wideEP only) | needs a co-versioned AITER image (see Caveats) |
+| `DeepSeek-V4-Flash-FP8` | MoE | 3 (moriio wideEP) | v0.28.0 image; MoRI-EP only |
+| `DeepSeek-V4-Pro-FP8` | MoE | 3 (moriio wideEP) | v0.28.0 image; MoRI-EP only |
 | `GLM-5.1-FP8` | MoE + DSA | 3 (moriio wideEP only) | own image (`glmv5.1` Dockerfile); 2P/2D EP16 and 4P/4D EP32 validated on the current pins (NIAH ~93-97%) |
 
 ## Prerequisites
@@ -94,6 +96,15 @@ its `VLLM_REF` is a hard requirement, not a preference — MAD ships no runtime 
 so every GLM DSA fix has to be in-source in that image. Add a
 `vllm_disagg_inference.<model>.ubuntu.amd.Dockerfile` per future model that needs its
 own pins rather than repinning the shared one.
+
+`DeepSeek-V4-Flash-FP8` / `DeepSeek-V4-Pro-FP8` use the v0.28.0 MoRI-EP image
+(`--image v0280`):
+
+`docker/vllm_disagg_recent_source_v0280_aiter_1d872fa_mori6fcf6b3_triton_kernels.ubuntu.amd.Dockerfile`
+
+Pins (vLLM v0.28.0, AITER `1d872fa` from source, MoRI `6fcf6b3`) are in the Dockerfile
+header. Do not docker-build on login or WSL. Submit with `./run_wideep_bench.sh` and
+**always pass `--image v0280`**.
 
 Then `export DOCKER_IMAGE_NAME=<tag>` (or a published image) before submitting. The slurm
 `docker pull`s the image on every node, so a local-only tag must be pushed to a registry the nodes
