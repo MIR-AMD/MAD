@@ -43,6 +43,10 @@ IMG_MORI624="rocm/pytorch-private:vllm-recent-source-basem-d626108b-aiter-1d872f
 # regresses. v0.28.0 is 13 ahead / 150 BEHIND d626108b -- reproducible release,
 # not a newer vLLM.
 IMG_V0280="rocm/pytorch-private:vllm-recent-source-basem-v0280-aiter-1d872fa-fd031-mori6fcf6b3-tk"
+# vLLM release v0.29.0 (98dff2a) + AITER main 10f8874 + MoRI main 07bdace.
+# Separate Dockerfile from v0280. Do not mix scores. Hub base is still ROCm 7.2.3
+# — AITER is source-built, not the UFB +rocm10.1.0a wheel.
+IMG_V0290="rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk"
 IMG_026="rocm/pytorch-private:vllm-recent-source-basem-20260815"
 
 # Live exclude (override with EXCLUDE_NODES= or --exclude). Empty + --nodelist
@@ -62,13 +66,15 @@ Usage: ./run_wideep_bench.sh BENCH MODEL TOPO [flags]
 
 Flags:
   --dry-run              print sbatch, do not submit
-  --image e03|e03tk|5a4c|d626|d626fd|mori624002|v0280|026|<tag>
+  --image e03|e03tk|5a4c|d626|d626fd|mori624002|v0280|v0290|026|<tag>
                          image (default: glm*→e03, dsv4fls/dsv4pro→mori624002, dsv3/hy3→026)
                          mori624002 = DSV4 vehicle. Hub d626108b + AITER 1d872fa + flydsl==0.3.1
                                   + MoRI 624002c8 + gRPC/UMBP. Pair with DSV4_HMA_UPSTREAM_GEOM=1.
                          v0280  = vLLM release v0.28.0 + MoRI 6fcf6b3. Same AITER/flydsl/tk as
                                   mori624002, so a delta is vLLM-or-MoRI, not attributable further.
                                   Unproven: smoke it, then HMA=0 2k+8k vs 218778 before any claim.
+                         v0290  = vLLM v0.29.0 + AITER main 10f8874 + MoRI 07bdace. Own Dockerfile.
+                                  Hub base still ROCm 7.2.3. flydsl==0.3.2. Do not mix with v0280.
                          d626fd = same vLLM/AITER/flydsl, older MoRI cfe7ed38, no UMBP. Closed.
                          d626   = alias of d626fd. Poison …-1d872fa-tk (flydsl 0.1.8) is 217850.
                          5a4c   = Hub 5a4c8d99 + AITER e03 + triton_kernels wheel. Not DSV4 HMA.
@@ -261,6 +267,7 @@ case "${IMAGE_ARG}" in
     5a4c|5a4c8d99) DOCKER_IMAGE_NAME="$IMG_5A4C"; IMG_TAG=5a4c ;;
     mori624002|mori624|624002c8) DOCKER_IMAGE_NAME="$IMG_MORI624"; IMG_TAG=mori624 ;;
     v0280|v028|v0.28.0|mori6fcf|6fcf6b3) DOCKER_IMAGE_NAME="$IMG_V0280"; IMG_TAG=v0280 ;;
+    v0290|v029|v0.29.0|10f8874|mori07bdace) DOCKER_IMAGE_NAME="$IMG_V0290"; IMG_TAG=v0290 ;;
     d626fd|fd031|d626|d626108b|1d872fa) DOCKER_IMAGE_NAME="$IMG_D626FD"; IMG_TAG=d626 ;;
     026|20260815) DOCKER_IMAGE_NAME="$IMG_026"; IMG_TAG=026 ;;
     *)     DOCKER_IMAGE_NAME="$IMAGE_ARG"; IMG_TAG=custom ;;
@@ -272,7 +279,9 @@ if [[ -z "$IMAGE_ARG" || "$IMG_TAG" == "custom" ]]; then
     # v0280 / mori624002 first: both tags also contain fd031 / 1d872fa (and the
     # mori624002 one contains d626108b), so the d626 arm below would swallow
     # them and hide the vLLM / MoRI bump in JOB_NAME.
-    if [[ "$DOCKER_IMAGE_NAME" == *v0280* || "$DOCKER_IMAGE_NAME" == *mori6fcf6b3* ]]; then
+    if [[ "$DOCKER_IMAGE_NAME" == *v0290* || "$DOCKER_IMAGE_NAME" == *mori07bdace* || "$DOCKER_IMAGE_NAME" == *10f8874* ]]; then
+        IMG_TAG=v0290
+    elif [[ "$DOCKER_IMAGE_NAME" == *v0280* || "$DOCKER_IMAGE_NAME" == *mori6fcf6b3* ]]; then
         IMG_TAG=v0280
     elif [[ "$DOCKER_IMAGE_NAME" == *mori624002* ]]; then
         IMG_TAG=mori624
@@ -288,7 +297,11 @@ if [[ -z "$IMAGE_ARG" || "$IMG_TAG" == "custom" ]]; then
 fi
 
 JOB_NAME="${JOB_NAME_ARG:-${SHORT}-${IMG_TAG}-${BENCH}-${TOPO}}"
-PARTITION="${PARTITION:-amd-rccl}"
+# Site submit (2026-09-09): partition amd-arad-burst, account amd-rccl-guest.
+# amd-rccl + amd-rccl-guest is rejected (Invalid account or account/partition).
+PARTITION="${PARTITION:-amd-arad-burst}"
+ACCOUNT="${ACCOUNT:-amd-rccl-guest}"
+QOS="${QOS:-}"
 
 # DSV3 on e03: fp8 KV + disable AITER fp8 BMM (216336 boot-die; 216636/217241).
 # GLM persist-gate stays unset (moriio.sh default GATE=0).
@@ -536,7 +549,7 @@ echo "TIME=$TIME_ARG"
 [[ "$BENCH" == "smoke" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"
 [[ "$BENCH" == "niah" ]] && echo "NIAH_METHOD=${NIAH_METHOD:-}  NIAH_WORDS=$NIAH_WORDS  NIAH_SEEDS=$NIAH_SEEDS  HALT=$NIAH_HALT_ON_FAIL  MAXTOK=${NIAH_MAXTOK:-}  WARMUP=${NIAH_WARMUP:-}  TIMEOUT=${NIAH_TIMEOUT:-}  WRAP=0  TERSE=${NIAH_TERSE:-0}  STOP_BLANK=${NIAH_STOP_BLANK:-0}  MINTOK=${NIAH_MIN_TOKENS:-0}  PRIME=${NIAH_LIST_PRIME:-}  STOP=${NIAH_STOP:-}  LOGPROBS=${NIAH_LOGPROBS:-0}"
 [[ ${#EXTRA_ENV[@]} -gt 0 ]] && echo "EXTRA ${EXTRA_ENV[*]}"
-echo "JOB_NAME=$JOB_NAME  ${SBATCH_LOC[*]:-any-node}"
+echo "JOB_NAME=$JOB_NAME  ACCOUNT=$ACCOUNT  PARTITION=$PARTITION  QOS=${QOS:-default}  ${SBATCH_LOC[*]:-any-node}"
 [[ -n "$AFTER_JOB" ]] && echo "DEPENDENCY=afterany:${AFTER_JOB}"
 echo "========================="
 
@@ -545,7 +558,11 @@ if [[ -n "$AFTER_JOB" ]]; then
     SBATCH_EXTRA+=(--dependency="afterany:${AFTER_JOB}")
 fi
 
-SBATCH_CMD=(sbatch -p "$PARTITION" -N "$N" -n "$N" --gres=gpu:8 --time="$TIME_ARG"
+SBATCH_CMD=(sbatch -A "$ACCOUNT")
+if [[ -n "$QOS" ]]; then
+    SBATCH_CMD+=(--qos="$QOS")
+fi
+SBATCH_CMD+=(-p "$PARTITION" -N "$N" -n "$N" --ntasks-per-node=1 --gres=gpu:8 --time="$TIME_ARG"
     "${SBATCH_LOC[@]}" "${SBATCH_EXTRA[@]}"
     --job-name="$JOB_NAME" --export=ALL
     run_xPyD_models.slurm)
