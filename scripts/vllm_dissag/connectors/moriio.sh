@@ -528,6 +528,8 @@ _dsv4_backend_detect_fix() {
 
 # DSV4 Flash: KV views are non-contiguous (217514). 217532 skip-all left 0
 # caches (StopIteration). Register a data_ptr-aligned storage span; no .contiguous().
+# Dual-anchor: v0.28 per-layer register_local_tensor(kv_cache); v0.29 also
+# rewrites _build_shared_kv_mr .view(uint8) and skips shared MR on strided KV.
 _dsv4_skip_noncontiguous_register() {
     local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
     local _py="${_patch_dir}/apply_moriio_dsv4_skip_noncontiguous_register_fix.py"

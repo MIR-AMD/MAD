@@ -27,6 +27,17 @@ MR. Keep original tensors in self.kv_caches (stride/offset math).
     DSV4_STORAGE_UPSTREAM_SPAN=0   (default) tight bbox
     DSV4_STORAGE_UPSTREAM_SPAN=1            vllm#48989 N*stride[0]*es
 
+Two MoRIIO shapes, both kept during v0280 / v0290 validation:
+
+* **v0.28** (and earlier): one ``register_local_tensor(kv_cache)`` per layer.
+* **v0.29** (``98dff2a``): ``_build_shared_kv_mr`` does ``.view(uint8)`` over
+  the whole storage from byte 0, then a per-layer fallback
+  ``shared_mr or register_local_tensor(kv_cache)``. That is not this fix —
+  ``.view(uint8)`` is 217514, whole-storage from byte 0 is 217546.
+  Non-contiguous DSV4 skips the shared MR and uses the same per-layer
+  data_ptr span as v0.28. The ``.view(uint8)`` line is still replaced so a
+  contiguous shared-backing path cannot raise.
+
 Gated to DeepSeek-V4-Flash-FP8 / Pro. GLM/DSV3/Hy3 never run this.
 Idempotent. Missing file -> skip. Found-old that fails is a hard error.
 
@@ -39,6 +50,7 @@ import sys
 REL = "distributed/kv_transfer/kv_connector/v1/moriio/moriio_connector.py"
 MARKER = "DSV4-STORAGE-SPAN"
 UPSTREAM_MARKER = "DSV4-STORAGE-UPSTREAM-SPAN"
+SHARED_MR_MARKER = "DSV4-STORAGE-SHARED-MR"
 
 FLAG = '''
 # DSV4-STORAGE-UPSTREAM-SPAN: vllm#48989 MR size N*stride[0]*es vs tight bbox.
@@ -145,6 +157,94 @@ NEW = """            # DSV4-STORAGE-SPAN: 217514/217532/217546. Flash KV is a st
             moriio_mem_metadata = self.moriio_wrapper.register_local_tensor(_reg)
 """
 
+# v0.29.0 (98dff2a) — exact strings from moriio_connector.py.
+OLD_V0290_VIEW = """        backing = next(iter(kv_caches.values())).view(torch.uint8)
+        nbytes = backing.untyped_storage().nbytes()
+        base = torch.as_strided(backing, (nbytes,), (1,), 0)
+"""
+
+NEW_V0290_VIEW = """        # DSV4-STORAGE-SHARED-MR: .view(uint8) raises on DSV4 strided
+        # caches (217514). 1D uint8 cover of untyped_storage; no copy.
+        _first = next(iter(kv_caches.values()))
+        _stor = _first.untyped_storage()
+        nbytes = int(_stor.nbytes())
+        backing = _first.new_empty((0,), dtype=torch.uint8)
+        backing.set_(_stor, 0, (nbytes,))
+        base = torch.as_strided(backing, (nbytes,), (1,), 0)
+"""
+
+OLD_V0290_SHARED = """        shared_backing = len({id(t.untyped_storage()) for t in kv_caches.values()}) == 1
+        shared_mr = None
+        if shared_backing:
+"""
+
+NEW_V0290_SHARED = """        shared_backing = len({id(t.untyped_storage()) for t in kv_caches.values()}) == 1
+        # DSV4-STORAGE-SPAN: 217546 whole-allocation MR hung rank 1 when
+        # offsets were tensor-relative. v0.29 shared MR still covers
+        # storage from byte 0; DSV4 strided views keep the proven
+        # per-layer data_ptr span (same as v0.28).
+        if any(not t.is_contiguous() for t in kv_caches.values()):
+            logger.warning(
+                "[dsv4-storage] non-contiguous KV; skip shared MR "
+                "(per-layer data_ptr span)"
+            )
+            shared_backing = False
+        shared_mr = None
+        if shared_backing:
+"""
+
+OLD_V0290_BARE = """            moriio_mem_metadata = shared_mr or (
+                self.moriio_wrapper.register_local_tensor(kv_cache)
+            )
+"""
+
+NEW_V0290_BARE = """            # DSV4-STORAGE-SPAN: 217514/217532/217546. Flash KV is a strided
+            # packed view. MoRI requires contiguous. Do not .contiguous()
+            # (copy). Register a 1D uint8 view of the live storage spanning
+            # this tensor, starting at data_ptr — not the whole allocation
+            # from byte 0. Keep kv_cache for offset math.
+            # DSV4-STORAGE-UPSTREAM-SPAN: vllm#48989 is
+            # as_strided(view(uint8), (shape[0]*stride(0)*es,), (1,), offset).
+            # view(uint8) raises on a non-contiguous tensor, so set_() of
+            # that byte count is the same 1D cover. Default 0 = tight bbox
+            # (218443). Flag 1 = N*stride[0]*es so GEOM=1 full-block copies
+            # cannot overrun the last page.
+            _reg = kv_cache
+            if shared_mr is None and not kv_cache.is_contiguous():
+                _stor = kv_cache.untyped_storage()
+                _es = int(kv_cache.element_size())
+                _span = 0
+                if kv_cache.numel() > 0:
+                    if DSV4_STORAGE_UPSTREAM_SPAN and kv_cache.dim() >= 1:
+                        _span = int(kv_cache.shape[0] * kv_cache.stride(0) * _es)
+                    else:
+                        _end = 0
+                        for _sz, _st in zip(kv_cache.size(), kv_cache.stride()):
+                            if _sz:
+                                _end += (_sz - 1) * _st
+                        _span = int(_es * (_end + 1))
+                _off = int(kv_cache.data_ptr()) - int(_stor.data_ptr())
+                if _off < 0:
+                    _off = 0
+                _remain = int(_stor.nbytes()) - _off
+                if _span > _remain:
+                    _span = max(_remain, 0)
+                _reg = kv_cache.new_empty((0,), dtype=torch.uint8)
+                _reg.set_(_stor, _off, (_span,))
+                logger.warning(
+                    "[dsv4-storage] layer %s not contiguous; register storage "
+                    "span nbytes=%d offset=%d span=%d upstream=%s",
+                    layer_name,
+                    int(_stor.nbytes()),
+                    _off,
+                    _span,
+                    DSV4_STORAGE_UPSTREAM_SPAN,
+                )
+            moriio_mem_metadata = shared_mr or (
+                self.moriio_wrapper.register_local_tensor(_reg)
+            )
+"""
+
 
 def _insert_flag(src: str) -> str:
     if "DSV4_STORAGE_UPSTREAM_SPAN = (" in src:
@@ -155,10 +255,18 @@ def _insert_flag(src: str) -> str:
     raise ValueError("anchor missing: logger = init_logger")
 
 
-def _apply(src: str) -> tuple[str, str]:
-    """Return (patched_src, kind). kind is 'noop' when already current."""
-    if "DSV4-CONTIG" in src:
-        raise ValueError("DSV4-CONTIG skip-all still present; refusing")
+def _v0290_done(src: str) -> bool:
+    return (
+        SHARED_MR_MARKER in src
+        and UPSTREAM_MARKER in src
+        and "skip shared MR" in src
+        and "shared_mr is None and not kv_cache.is_contiguous()" in src
+        and "upstream=%s" in src
+    )
+
+
+def _apply_v0280(src: str) -> tuple[str, str]:
+    """v0.28 and earlier: one register_local_tensor(kv_cache) per layer."""
     if "upstream=%s" in src and UPSTREAM_MARKER in src:
         return src, "noop"
     if OLD_V1 in src:
@@ -171,7 +279,46 @@ def _apply(src: str) -> tuple[str, str]:
         raise ValueError(
             "SPAN present but neither OLD_SPAN nor upstream marker matched"
         )
-    raise ValueError("register_local_tensor anchor missing")
+    raise ValueError("register_local_tensor anchor missing (v0.28 per-layer)")
+
+
+def _apply_v0290(src: str) -> tuple[str, str]:
+    """v0.29: shared-MR .view(uint8) + per-layer shared_mr-or-register fallback."""
+    if _v0290_done(src):
+        return src, "noop"
+    kinds: list[str] = []
+    if OLD_V0290_VIEW in src:
+        src = src.replace(OLD_V0290_VIEW, NEW_V0290_VIEW, 1)
+        kinds.append("shared-mr set_")
+    elif SHARED_MR_MARKER not in src:
+        raise ValueError(
+            "_build_shared_kv_mr .view(uint8) anchor missing (v0.29)"
+        )
+    if OLD_V0290_SHARED in src:
+        src = src.replace(OLD_V0290_SHARED, NEW_V0290_SHARED, 1)
+        kinds.append("skip-shared")
+    elif "skip shared MR" not in src:
+        raise ValueError("shared_backing anchor missing (v0.29)")
+    if OLD_V0290_BARE in src:
+        src = src.replace(OLD_V0290_BARE, NEW_V0290_BARE, 1)
+        kinds.append("per-layer SPAN")
+    elif "shared_mr is None and not kv_cache.is_contiguous()" not in src:
+        raise ValueError(
+            "shared_mr or register_local_tensor(kv_cache) anchor missing (v0.29)"
+        )
+    src = _insert_flag(src)
+    if not kinds:
+        return src, "noop"
+    return src, "fresh SPAN+48989 v0.29 (" + ", ".join(kinds) + ")"
+
+
+def _apply(src: str) -> tuple[str, str]:
+    """Return (patched_src, kind). kind is 'noop' when already current."""
+    if "DSV4-CONTIG" in src:
+        raise ValueError("DSV4-CONTIG skip-all still present; refusing")
+    if "def _build_shared_kv_mr(" in src:
+        return _apply_v0290(src)
+    return _apply_v0280(src)
 
 
 def _selftest() -> int:
@@ -207,6 +354,37 @@ def _selftest() -> int:
     assert "DSV4_STORAGE_UPSTREAM_SPAN and kv_cache.dim()" in up
     ast.parse(up)
 
+    # v0.29 shared-MR + fallback. Anchors are the exact upstream strings.
+    stub29 = (
+        "from vllm.logger import init_logger\n"
+        "\nlogger = init_logger(__name__)\n"
+        "\nclass C:\n"
+        "    def _build_shared_kv_mr(self, kv_caches):\n"
+        + OLD_V0290_VIEW
+        + "        return backing\n"
+        "    def register(self, kv_caches, kv_cache, layer_name):\n"
+        + OLD_V0290_SHARED
+        + "            reg_tensor = kv_cache\n"
+        "            shared_mr = self.moriio_wrapper.register_local_tensor(reg_tensor)\n"
+        "        for layer_name, kv_cache in kv_caches.items():\n"
+        + OLD_V0290_BARE
+    )
+    out29, kind29 = _apply(stub29)
+    assert kind29.startswith("fresh SPAN+48989 v0.29"), kind29
+    assert "shared-mr set_" in kind29
+    assert "skip-shared" in kind29
+    assert "per-layer SPAN" in kind29
+    assert SHARED_MR_MARKER in out29
+    assert UPSTREAM_MARKER in out29
+    assert ".view(torch.uint8)" not in out29
+    assert "skip shared MR" in out29
+    assert "shared_mr is None and not kv_cache.is_contiguous()" in out29
+    assert "register_local_tensor(_reg)" in out29
+    ast.parse(out29)
+    out29b, kind29b = _apply(out29)
+    assert kind29b == "noop", kind29b
+    assert out29b == out29
+
     # Span arithmetic: shared-block DSV4 view (N, slots, latent), es=1.
     n, slots, latent, s0 = 10, 64, 584, 1435968
     tight = (n - 1) * s0 + (slots - 1) * latent + (latent - 1) * 1 + 1
@@ -239,17 +417,24 @@ def main() -> int:
         print(f"[dsv4-storage] ERROR: {e} in {path}.", file=sys.stderr)
         if "anchor missing" in str(e):
             for i, line in enumerate(src.splitlines(), 1):
-                if "register_local_tensor" in line:
+                if "register_local_tensor" in line or "_build_shared_kv_mr" in line:
                     print(f"[dsv4-storage]   line {i}: {line.rstrip()}", file=sys.stderr)
         return 1
 
     if kind == "noop":
-        print(f"[dsv4-storage] already patched (SPAN+48989) in {path} -- no-op.")
+        ver = "v0.29 shared-MR+SPAN" if "def _build_shared_kv_mr(" in src else "SPAN+48989"
+        print(f"[dsv4-storage] already patched ({ver}) in {path} -- no-op.")
         return 0
 
     if MARKER not in out or UPSTREAM_MARKER not in out:
         print(
             f"[dsv4-storage] ERROR: post-write missing marker in {path}.",
+            file=sys.stderr,
+        )
+        return 1
+    if "def _build_shared_kv_mr(" in out and SHARED_MR_MARKER not in out:
+        print(
+            f"[dsv4-storage] ERROR: post-write missing {SHARED_MR_MARKER} in {path}.",
             file=sys.stderr,
         )
         return 1
