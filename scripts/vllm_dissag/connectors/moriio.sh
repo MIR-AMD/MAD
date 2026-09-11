@@ -470,6 +470,8 @@ _dsv4_decode_diag_fix() {
 # pages on prefill src vs decode dest, and log sparse-MLA metadata_key /
 # paged_kv_indices zero_frac. 223342: also probe runner block_table each
 # execute_model (DSV4-KV-RUNNER-BT). Diagnostic only. DSV4_KV_HASH (default 0).
+# Dual-anchor: v0.28 return compute_block_transfer_offsets; v0.29 unpacks
+# local, remote, sizes then adds kv_layer_mr_offset (419148 miss).
 # Graph-vs-compress is DSV4_EAGER=1 (decode cudagraph NONE), not this patcher.
 # 223417: graph is out. runner-bt g0slot= logs group-0 dim[1]*ratio coverage.
 _dsv4_kv_hash_fix() {

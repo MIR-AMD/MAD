@@ -99,6 +99,15 @@ Do not flip the GLM indexer sentinel. Do not apply GLM indexer H2.
 Diagnostic only. Runtime flag DSV4_KV_HASH (default 0 = quiet; wrapper sets
 1 on DSV4). Idempotent.
 
+Two MoRIIO offset call sites, both kept during v0280 / v0290 validation:
+
+* **v0.28:** ``return compute_block_transfer_offsets(`` then
+  ``kv_cache=self.kv_caches[layer_name]``.
+* **v0.29** (``98dff2a``): ``local, remote, sizes = compute_block_transfer_offsets(``
+  then the same ``kv_cache=`` line, then ``kv_layer_mr_offset``. 419148/419211
+  died here: the v0.28 ``return`` string was gone, treated as a hard miss.
+  The helper itself still exists — this is a logger insert, not a geom change.
+
 Usage: apply_moriio_dsv4_kv_hash_fix.py <vllm_install_dir>
        apply_moriio_dsv4_kv_hash_fix.py --selftest
 """
@@ -1870,12 +1879,7 @@ def _insert_before(src: str, anchor: str, blob: str) -> str:
     return src[:idx] + blob.lstrip("\n") + "\n\n" + src[idx:]
 
 
-OFFSETS_OLD = """        return compute_block_transfer_offsets(
-            layer_name=layer_name,
-            kv_cache=self.kv_caches[layer_name],
-"""
-
-OFFSETS_NEW = """        _dsv4_kv_hash_log(self, "src", layer_name, local_block_ids)
+OFFSETS_LOG = """        _dsv4_kv_hash_log(self, "src", layer_name, local_block_ids)
         _dsv4_kv_zip_log(
             self, layer_name, local_block_ids, remote_block_ids
         )  # DSV4-KV-ZIP
@@ -1890,10 +1894,22 @@ OFFSETS_NEW = """        _dsv4_kv_hash_log(self, "src", layer_name, local_block_
                 _st["_offsets"] = list(local_block_ids or [])
             except Exception:
                 pass
-        return compute_block_transfer_offsets(
+"""
+
+OFFSETS_OLD = """        return compute_block_transfer_offsets(
             layer_name=layer_name,
             kv_cache=self.kv_caches[layer_name],
 """
+
+OFFSETS_NEW = OFFSETS_LOG + OFFSETS_OLD
+
+# v0.29.0 (98dff2a): unpack + kv_layer_mr_offset, no longer a bare return.
+OFFSETS_OLD_V0290 = """        local, remote, sizes = compute_block_transfer_offsets(
+            layer_name=layer_name,
+            kv_cache=self.kv_caches[layer_name],
+"""
+
+OFFSETS_NEW_V0290 = OFFSETS_LOG + OFFSETS_OLD_V0290
 
 _ALLOC_STASH = (
     "        _dsv4_kv_stash_dests(self, request, blocks)\n"
@@ -1939,14 +1955,17 @@ def _patch_connector(src: str, applied: list) -> str:
 
     if "_dsv4_kv_hash_log(self, \"src\", layer_name, local_block_ids)" in src:
         applied.append("conn-src (already)")
-    elif OFFSETS_OLD not in src:
-        raise ValueError(
-            "compute_block_transfer_offsets kv_cache= self.kv_caches "
-            "anchor missing"
-        )
-    else:
+    elif OFFSETS_OLD in src:
         src = src.replace(OFFSETS_OLD, OFFSETS_NEW, 1)
         applied.append("conn-src")
+    elif OFFSETS_OLD_V0290 in src:
+        src = src.replace(OFFSETS_OLD_V0290, OFFSETS_NEW_V0290, 1)
+        applied.append("conn-src v0.29")
+    else:
+        raise ValueError(
+            "compute_block_transfer_offsets kv_cache= self.kv_caches "
+            "anchor missing (v0.28 return / v0.29 unpack)"
+        )
 
     zip_call = (
         "_dsv4_kv_zip_log(\n            self, layer_name, "
@@ -2755,6 +2774,39 @@ def selftest() -> int:
         compile(cout, conn_path, "exec")
     except SyntaxError as e:
         print(f"[selftest] FAIL: patched connector SyntaxError: {e}")
+        return 1
+
+    # v0.29 unpack form (419148): not a `return compute_block_transfer_offsets`.
+    src29 = CONN_FAKE.replace(OFFSETS_OLD, OFFSETS_OLD_V0290, 1)
+    if OFFSETS_OLD in src29 or OFFSETS_OLD_V0290 not in src29:
+        print("[selftest] FAIL: v0.29 stub still has v0.28 return offsets")
+        return 1
+    applied29: list = []
+    out29 = _patch_connector(src29, applied29)
+    if "conn-src v0.29" not in applied29:
+        print(f"[selftest] FAIL: expected conn-src v0.29, got {applied29}")
+        return 1
+    if OFFSETS_OLD_V0290 not in out29:
+        print("[selftest] FAIL: v0.29 unpack call missing after patch")
+        return 1
+    if "return compute_block_transfer_offsets(" in out29:
+        print("[selftest] FAIL: v0.29 patch rewrote unpack back to return")
+        return 1
+    if '_dsv4_kv_hash_log(self, "src", layer_name, local_block_ids)' not in out29:
+        print("[selftest] FAIL: v0.29 src hash log missing")
+        return 1
+    try:
+        compile(out29, "<v0290-conn>", "exec")
+    except SyntaxError as e:
+        print(f"[selftest] FAIL: v0.29 connector SyntaxError: {e}")
+        return 1
+    applied29b: list = []
+    out29b = _patch_connector(out29, applied29b)
+    if "conn-src (already)" not in applied29b:
+        print(f"[selftest] FAIL: v0.29 not idempotent {applied29b}")
+        return 1
+    if out29b != out29:
+        print("[selftest] FAIL: v0.29 second apply mutated source")
         return 1
 
     typed_src = CONN_FAKE.replace(
