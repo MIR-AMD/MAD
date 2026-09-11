@@ -51,7 +51,7 @@ IMG_026="rocm/pytorch-private:vllm-recent-source-basem-20260815"
 
 # Live exclude (override with EXCLUDE_NODES= or --exclude). Empty + --nodelist
 # means "only that pool".
-DEFAULT_EXCLUDE='useocpm2m-097-[008,015,019-020,025,033,040-042,045,049,069,077,080,082-084,089,094-095,100,115,121-125,132,135-136,139-140,142,144,154]'
+DEFAULT_EXCLUDE='useocpm2m-097-[008,015,019-020,025,033,040-042,045,049,069,077,080,082-084,089,094-095,100,114,115,121-125,132,135-136,139-140,142,144,154]'
 # GLM-5.2 NVMe pool (/mnt/m2m_nobackup/models_blog/GLM-5.2-FP8). glm52 defaults here.
 GLM52_STAGED='useocpm2m-097-[017,023,026,028,030,033,038,039,040,045,051,069,077,078,080,082,083,084,089,094,095,100,114,115,122,123,124,125,132,135,137,139,140,142,144,148,151,153,155]'
 
@@ -516,6 +516,13 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
         EXTRA_ENV+=(NIAH_STOP="${NIAH_STOP:-}")
         EXTRA_ENV+=(NIAH_LOGPROBS="${NIAH_LOGPROBS:-0}")
     fi
+fi
+
+# v0280/v0290 bake ENV SKIP_RUNTIME_PATCH=1 (image-build skip). That leaks into
+# serve and skips Wei combine original-topk (339189: 8192 vs 1024). Force 0
+# into docker -e; unset would keep the image ENV.
+if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
+    EXTRA_ENV+=(SKIP_RUNTIME_PATCH="${SKIP_RUNTIME_PATCH:-0}")
 fi
 
 # glm52: default to NVMe staged pool unless operator passed --nodelist/--exclude.
