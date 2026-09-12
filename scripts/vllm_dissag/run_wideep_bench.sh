@@ -525,6 +525,13 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-
     EXTRA_ENV+=(SKIP_RUNTIME_PATCH="${SKIP_RUNTIME_PATCH:-0}")
 fi
 
+# EP16 NFS+JIT boot exceeds the old 4000s gate (432977 timed out a dead
+# decode; 216650 died while decode was still writing). --export=ALL can
+# leak LOG_WAIT_TIMEOUT_SECONDS=4000 from the login shell; force unless
+# the operator overrides.
+LOG_WAIT_TIMEOUT_SECONDS="${LOG_WAIT_TIMEOUT_SECONDS:-10800}"
+EXTRA_ENV+=(LOG_WAIT_TIMEOUT_SECONDS="$LOG_WAIT_TIMEOUT_SECONDS")
+
 # glm52: default to NVMe staged pool unless operator passed --nodelist/--exclude.
 if [[ "$SHORT" == "glm52" && -z "$NODELIST_ARG" && "$EXCLUDE_EXPLICIT" == "0" ]]; then
     NODELIST_ARG="$GLM52_STAGED"

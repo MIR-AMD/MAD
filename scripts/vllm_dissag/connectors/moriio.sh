@@ -864,7 +864,9 @@ connector_launch_worker() {
 connector_wait_workers_ready() {
     echo "Waiting for prefill & decode servers to be ready..."
     sleep 20
-    local TIMEOUT_SECONDS="${LOG_WAIT_TIMEOUT_SECONDS:-4000}"
+    # 4000s is too short for EP16 NFS load + MoRI JIT (216650, 432977).
+    # Override still wins; wrapper forces 10800 so a leaked 4000 cannot.
+    local TIMEOUT_SECONDS="${LOG_WAIT_TIMEOUT_SECONDS:-10800}"
     local SLEEP_SECONDS=10
     local SEARCH_SIGNAL="Application startup complete."
     local PREFILL_LOG=/run_logs/${SLURM_JOB_ID}/prefill_NODE0.log
