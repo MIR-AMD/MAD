@@ -438,13 +438,15 @@ BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS:-}"
 # The launcher/connectors auto-enable prefix caching + server /metrics when
 # BENCHMARK_SCRIPT=agentic.
 #   niah                   -> benchmark_niah.sh         (needle-in-a-haystack; NIAH_WORDS)
+#   mrcr                   -> benchmark_mrcr.sh         (OpenAI MRCR; no NIAH_LIST_PRIME)
 BENCHMARK_SCRIPT="${BENCHMARK_SCRIPT:-sweep}"
 case "$BENCHMARK_SCRIPT" in
     sweep)        BENCHMARK_SCRIPT_FILE="benchmark_xPyD.sh" ;;
     long_context) BENCHMARK_SCRIPT_FILE="benchmark_long_context.sh" ;;
     agentic)      BENCHMARK_SCRIPT_FILE="benchmark_agentic.sh" ;;
     niah)         BENCHMARK_SCRIPT_FILE="benchmark_niah.sh" ;;
-    *) echo "Error: invalid BENCHMARK_SCRIPT='$BENCHMARK_SCRIPT' (valid: sweep, long_context, agentic, niah)" >&2; exit 1 ;;
+    mrcr)         BENCHMARK_SCRIPT_FILE="benchmark_mrcr.sh" ;;
+    *) echo "Error: invalid BENCHMARK_SCRIPT='$BENCHMARK_SCRIPT' (valid: sweep, long_context, agentic, niah, mrcr)" >&2; exit 1 ;;
 esac
 if [[ ! -f "$BENCHMARK_SCRIPT_FILE" ]]; then
     echo "Error: selected benchmark script '$BENCHMARK_SCRIPT_FILE' not found in $(pwd)." >&2
@@ -654,6 +656,15 @@ docker run --rm \
     ${NIAH_LIST_PRIME:+-e NIAH_LIST_PRIME=$NIAH_LIST_PRIME} \
     ${NIAH_STOP:+-e NIAH_STOP=$NIAH_STOP} \
     ${NIAH_LOGPROBS:+-e NIAH_LOGPROBS=$NIAH_LOGPROBS} \
+    ${MRCR_NEEDLES:+-e MRCR_NEEDLES=$MRCR_NEEDLES} \
+    ${MRCR_BINS:+-e MRCR_BINS=$MRCR_BINS} \
+    ${MRCR_PER_BIN:+-e MRCR_PER_BIN=$MRCR_PER_BIN} \
+    ${MRCR_MAXTOK:+-e MRCR_MAXTOK=$MRCR_MAXTOK} \
+    ${MRCR_TIMEOUT:+-e MRCR_TIMEOUT=$MRCR_TIMEOUT} \
+    ${MRCR_MAX_CTX:+-e MRCR_MAX_CTX=$MRCR_MAX_CTX} \
+    ${MRCR_THINKING:+-e MRCR_THINKING=$MRCR_THINKING} \
+    ${MRCR_DATA_DIR:+-e MRCR_DATA_DIR=$MRCR_DATA_DIR} \
+    ${MRCR_HALT_ON_FAIL:+-e MRCR_HALT_ON_FAIL=$MRCR_HALT_ON_FAIL} \
     ${NIAH_DS_WRAP:+-e NIAH_DS_WRAP=$NIAH_DS_WRAP} \
     ${NIAH_MIN_TOKENS:+-e NIAH_MIN_TOKENS=$NIAH_MIN_TOKENS} \
     ${PROXY_ROUTE_DP:+-e PROXY_ROUTE_DP=$PROXY_ROUTE_DP} \

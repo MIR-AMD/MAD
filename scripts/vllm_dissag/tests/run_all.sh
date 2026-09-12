@@ -15,6 +15,9 @@ echo ""
 echo "############### test_list_prime.py ###############"
 python3 "$ROOT/tests/test_list_prime.py" || rc=1
 echo ""
+echo "############### test_mrcr.py ###############"
+python3 "$ROOT/tests/test_mrcr.py" || rc=1
+echo ""
 echo "############### test_moriio_pd_proxy.py ###############"
 ( cd "$ROOT/proxy" && python3 test_moriio_pd_proxy.py ) || rc=1
 echo ""

@@ -12,6 +12,9 @@
 #   ./run_wideep_bench.sh smoke dsv4pro 1p1d --image v0280
 #   ./run_wideep_bench.sh smoke glm 2p2d
 #   ./run_wideep_bench.sh niah glm 4p4d --dry-run
+  # OpenAI MRCR (no prime). Flash 2-needle through 32k, then Pro if MMR looks sane:
+  #   MRCR_PER_BIN=8 MRCR_DATA_DIR=/shared_inference/bbarakat/datasets/openai_mrcr \\
+  #   ./run_wideep_bench.sh mrcr dsv4fls 2p2d --image v0290 --time 04:00:00 --exclude ''
   # Flash HMA=0 2P/2D product+prime (colocated 225021 cell, on the product arm):
   #   DSV4_ENABLE_HMA=0 NIAH_METHOD=product NIAH_MAXTOK=512 \\
   #   NIAH_WORDS=2000,8000,16000 NIAH_SEEDS=0,0,0 NIAH_LIST_PRIME='1.' \\
@@ -59,7 +62,7 @@ usage() {
     cat <<'EOF'
 Usage: ./run_wideep_bench.sh BENCH MODEL TOPO [flags]
 
-  BENCH   niah | smoke
+  BENCH   niah | smoke | mrcr
   MODEL   glm | glm51 | glm52 | dsv3 | dsv4fls | dsv4pro | hy3 | hy3p | GLM-5.1-FP8 | ...
   TOPO    1p1d | 2p2d | 3p3d | 4p4d | ep8 | ep16 | ep24 | ep32
           asymmetric: 1p2d | 2p1d | 2p3d | 3p2d  (driver derives per-role DP)
@@ -183,7 +186,27 @@ case "$BENCH" in
             BENCHMARK_CON="${BENCHMARK_CON:-1 8 16 32}"
         fi
         ;;
-    *) echo "Error: unknown BENCH '$BENCH' (niah|smoke)" >&2; usage ;;
+    mrcr)
+        # OpenAI MRCR. Flash first, 2-needle, bins that fit 40k. No prime.
+        # Full 100/bin will not fit a 4h PD job — default PER_BIN=8.
+        if [[ "$SHORT" != "dsv4fls" && "$SHORT" != "dsv4pro" ]]; then
+            echo "Error: mrcr is DSV4-only (run Flash, then Pro if MMR looks sane)." >&2
+            exit 1
+        fi
+        BENCHMARK_SCRIPT=mrcr
+        MRCR_NEEDLES="${MRCR_NEEDLES:-2}"
+        MRCR_BINS="${MRCR_BINS:-8192,16384,32768}"
+        MRCR_PER_BIN="${MRCR_PER_BIN:-8}"
+        MRCR_MAXTOK="${MRCR_MAXTOK:-1024}"
+        MRCR_TIMEOUT="${MRCR_TIMEOUT:-1800}"
+        MRCR_MAX_CTX="${MRCR_MAX_CTX:-40960}"
+        MRCR_THINKING="${MRCR_THINKING:-chat}"
+        MRCR_HALT_ON_FAIL="${MRCR_HALT_ON_FAIL:-0}"
+        BENCHMARK_COMBINATIONS=""
+        # A leftover NIAH_LIST_PRIME from a previous submit would zero MMR.
+        unset NIAH_LIST_PRIME || true
+        ;;
+    *) echo "Error: unknown BENCH '$BENCH' (niah|smoke|mrcr)" >&2; usage ;;
 esac
 
 # Walltime scales with node count (AITER JIT).
@@ -194,6 +217,10 @@ if [[ -z "$TIME_ARG" ]]; then
         niah-2p2d)  TIME_ARG=08:00:00 ;;
         niah-3p3d)  TIME_ARG=10:00:00 ;;
         niah-4p4d)  TIME_ARG=12:00:00 ;;
+        mrcr-1p1d)  TIME_ARG=04:00:00 ;;
+        mrcr-2p2d)  TIME_ARG=04:00:00 ;;
+        mrcr-3p3d)  TIME_ARG=06:00:00 ;;
+        mrcr-4p4d)  TIME_ARG=08:00:00 ;;
         smoke-1p1d) TIME_ARG=04:00:00 ;;
         smoke-2p2d) TIME_ARG=06:00:00 ;;
         smoke-3p3d) TIME_ARG=07:00:00 ;;
@@ -206,6 +233,7 @@ if [[ -z "$TIME_ARG" ]]; then
             smoke-1p1d) TIME_ARG=06:00:00 ;;
             smoke-2p2d) TIME_ARG=08:00:00 ;;
             niah-1p1d|niah-2p2d) TIME_ARG=12:00:00 ;;
+            mrcr-1p1d|mrcr-2p2d) TIME_ARG=04:00:00 ;;
         esac
     fi
     if [[ "$SHORT" == "dsv4pro" ]]; then
@@ -213,6 +241,7 @@ if [[ -z "$TIME_ARG" ]]; then
             smoke-1p1d) TIME_ARG=08:00:00 ;;
             smoke-2p2d) TIME_ARG=10:00:00 ;;
             niah-1p1d|niah-2p2d|niah-4p4d) TIME_ARG=12:00:00 ;;
+            mrcr-1p1d|mrcr-2p2d|mrcr-4p4d) TIME_ARG=04:00:00 ;;
         esac
     fi
     # Asymmetric topologies match no case arm above and would leave TIME_ARG
@@ -220,6 +249,7 @@ if [[ -z "$TIME_ARG" ]]; then
     if [[ -z "$TIME_ARG" ]]; then
         case "$BENCH" in
             niah)  TIME_ARG=$(printf '%02d:00:00' $(( N < 6 ? 6 : 8 )) ) ;;
+            mrcr)  TIME_ARG=04:00:00 ;;
             smoke) TIME_ARG=$(printf '%02d:00:00' $(( N < 6 ? 4 : 6 )) ) ;;
         esac
         echo "note: $BENCH-$TOPO has no walltime default; using $TIME_ARG for N=$N" >&2
@@ -525,6 +555,20 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-
     EXTRA_ENV+=(SKIP_RUNTIME_PATCH="${SKIP_RUNTIME_PATCH:-0}")
 fi
 
+if [[ "$BENCH" == "mrcr" ]]; then
+    EXTRA_ENV+=(MRCR_NEEDLES="${MRCR_NEEDLES:-2}")
+    EXTRA_ENV+=(MRCR_BINS="${MRCR_BINS:-8192,16384,32768}")
+    EXTRA_ENV+=(MRCR_PER_BIN="${MRCR_PER_BIN:-8}")
+    EXTRA_ENV+=(MRCR_MAXTOK="${MRCR_MAXTOK:-1024}")
+    EXTRA_ENV+=(MRCR_TIMEOUT="${MRCR_TIMEOUT:-1800}")
+    EXTRA_ENV+=(MRCR_MAX_CTX="${MRCR_MAX_CTX:-40960}")
+    EXTRA_ENV+=(MRCR_THINKING=chat)
+    EXTRA_ENV+=(MRCR_HALT_ON_FAIL="${MRCR_HALT_ON_FAIL:-0}")
+    if [[ -n "${MRCR_DATA_DIR:-}" ]]; then
+        EXTRA_ENV+=(MRCR_DATA_DIR="$MRCR_DATA_DIR")
+    fi
+fi
+
 # EP16 NFS+JIT boot exceeds the old 4000s gate (432977 timed out a dead
 # decode; 216650 died while decode was still writing). --export=ALL can
 # leak LOG_WAIT_TIMEOUT_SECONDS=4000 from the login shell; force unless
@@ -562,6 +606,7 @@ echo "PROXY_TYPE=${PROXY_TYPE:-moriio_toy}  PROXY_ROUTE_DP=$PROXY_ROUTE_DP  SKIP
 echo "TIME=$TIME_ARG"
 [[ "$BENCH" == "smoke" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"
 [[ "$BENCH" == "niah" ]] && echo "NIAH_METHOD=${NIAH_METHOD:-}  NIAH_WORDS=$NIAH_WORDS  NIAH_SEEDS=$NIAH_SEEDS  HALT=$NIAH_HALT_ON_FAIL  MAXTOK=${NIAH_MAXTOK:-}  WARMUP=${NIAH_WARMUP:-}  TIMEOUT=${NIAH_TIMEOUT:-}  WRAP=0  TERSE=${NIAH_TERSE:-0}  STOP_BLANK=${NIAH_STOP_BLANK:-0}  MINTOK=${NIAH_MIN_TOKENS:-0}  PRIME=${NIAH_LIST_PRIME:-}  STOP=${NIAH_STOP:-}  LOGPROBS=${NIAH_LOGPROBS:-0}"
+[[ "$BENCH" == "mrcr" ]] && echo "MRCR needles=${MRCR_NEEDLES:-2}  bins=${MRCR_BINS:-}  per_bin=${MRCR_PER_BIN:-}  MAXTOK=${MRCR_MAXTOK:-}  TIMEOUT=${MRCR_TIMEOUT:-}  MAX_CTX=${MRCR_MAX_CTX:-}  THINKING=chat  PRIME=OFF  DATA_DIR=${MRCR_DATA_DIR:-hf}"
 [[ ${#EXTRA_ENV[@]} -gt 0 ]] && echo "EXTRA ${EXTRA_ENV[*]}"
 echo "JOB_NAME=$JOB_NAME  ACCOUNT=$ACCOUNT  PARTITION=$PARTITION  QOS=${QOS:-default}  ${SBATCH_LOC[*]:-any-node}"
 [[ -n "$AFTER_JOB" ]] && echo "DEPENDENCY=afterany:${AFTER_JOB}"
@@ -628,6 +673,11 @@ if [[ "$BENCH" == "niah" ]]; then
     export NIAH_LIST_PRIME="${NIAH_LIST_PRIME:-}"
     export NIAH_STOP="${NIAH_STOP:-}"
     export NIAH_LOGPROBS="${NIAH_LOGPROBS:-0}"
+fi
+if [[ "$BENCH" == "mrcr" ]]; then
+    export MRCR_NEEDLES MRCR_BINS MRCR_PER_BIN MRCR_MAXTOK MRCR_TIMEOUT
+    export MRCR_MAX_CTX MRCR_THINKING MRCR_HALT_ON_FAIL
+    [[ -n "${MRCR_DATA_DIR:-}" ]] && export MRCR_DATA_DIR
 fi
 if [[ ${#EXTRA_ENV[@]} -gt 0 ]]; then
     export "${EXTRA_ENV[@]}"

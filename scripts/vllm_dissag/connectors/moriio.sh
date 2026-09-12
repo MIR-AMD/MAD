@@ -1023,11 +1023,53 @@ connector_start_proxy() {
         sleep 20
     fi
 
-    curl -X POST http://127.0.0.1:${BENCHMARK_PORT}/v1/completions -H "Content-Type: application/json" -d '{
-        "prompt": "Who is AMD CEO?",
-        "temperature": 0,
-        "max_tokens" : 10,
-        "top_k": 1
-    }'
+    # Always run, including NIAH. 433093 used max_tokens=10 and Flash emitted
+    # JSON junk (`"label": "0"`) — too short to tell English from garbage.
+    # Three TYPE-1 prompts, 64 tok, verdict=COHERENT only if the needle is in
+    # the completion. Do not abort the bench on GARBAGE (NIAH still runs).
+    echo "===== smoke curl: 3 prompts (English vs garbage) ====="
+    python3 - "$BENCHMARK_PORT" <<'PY'
+import json, sys, urllib.error, urllib.request
+port = sys.argv[1]
+url = f"http://127.0.0.1:{port}/v1/completions"
+probes = (
+    ("amd", "Who is AMD CEO?", "lisa"),
+    ("france", "What is the capital of France?", "paris"),
+    ("uk", "What is the capital of the United Kingdom?", "london"),
+)
+n_ok = 0
+for tag, prompt, needle in probes:
+    print(f"===== curl[{tag}] {prompt!r} =====", flush=True)
+    body = json.dumps(
+        {"prompt": prompt, "temperature": 0, "max_tokens": 64, "top_k": 1}
+    ).encode()
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        print(f"[curl] FAIL[{tag}] {exc}", flush=True)
+        continue
+    print(raw, flush=True)
+    try:
+        text = json.loads(raw).get("choices", [{}])[0].get("text") or ""
+    except Exception:
+        text = ""
+    letters = sum(ch.isalpha() for ch in text)
+    ascii_en = any("a" <= ch.lower() <= "z" for ch in text)
+    hit = needle in text.lower()
+    garbage = (not hit) or letters < 8 or not ascii_en
+    verdict = "GARBAGE" if garbage else "COHERENT"
+    if verdict == "COHERENT":
+        n_ok += 1
+    print(
+        f"[curl] {verdict}[{tag}] needle={needle!r} letters={letters} "
+        f"text={text[:240]!r}",
+        flush=True,
+    )
+print(f"[curl] summary {n_ok}/3 COHERENT", flush=True)
+PY
     sleep 20
 }
