@@ -439,6 +439,7 @@ BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS:-}"
 # BENCHMARK_SCRIPT=agentic.
 #   niah                   -> benchmark_niah.sh         (needle-in-a-haystack; NIAH_WORDS)
 #   mrcr                   -> benchmark_mrcr.sh         (OpenAI MRCR; no NIAH_LIST_PRIME)
+#   validate               -> benchmark_validate.sh     (niah then smoke; curl already ran)
 BENCHMARK_SCRIPT="${BENCHMARK_SCRIPT:-sweep}"
 case "$BENCHMARK_SCRIPT" in
     sweep)        BENCHMARK_SCRIPT_FILE="benchmark_xPyD.sh" ;;
@@ -446,7 +447,8 @@ case "$BENCHMARK_SCRIPT" in
     agentic)      BENCHMARK_SCRIPT_FILE="benchmark_agentic.sh" ;;
     niah)         BENCHMARK_SCRIPT_FILE="benchmark_niah.sh" ;;
     mrcr)         BENCHMARK_SCRIPT_FILE="benchmark_mrcr.sh" ;;
-    *) echo "Error: invalid BENCHMARK_SCRIPT='$BENCHMARK_SCRIPT' (valid: sweep, long_context, agentic, niah, mrcr)" >&2; exit 1 ;;
+    validate)     BENCHMARK_SCRIPT_FILE="benchmark_validate.sh" ;;
+    *) echo "Error: invalid BENCHMARK_SCRIPT='$BENCHMARK_SCRIPT' (valid: sweep, long_context, agentic, niah, mrcr, validate)" >&2; exit 1 ;;
 esac
 if [[ ! -f "$BENCHMARK_SCRIPT_FILE" ]]; then
     echo "Error: selected benchmark script '$BENCHMARK_SCRIPT_FILE' not found in $(pwd)." >&2

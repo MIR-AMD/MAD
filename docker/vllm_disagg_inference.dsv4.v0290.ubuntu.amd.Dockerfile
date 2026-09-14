@@ -7,13 +7,15 @@
 #
 #################################################################################
 # =============================================================================
-# vllm_disagg_recent_source_v0290_aiter_10f8874_mori07bdace_triton_kernels.ubuntu.amd.Dockerfile
+# vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile
+#   DeepSeek-V4 Flash/Pro MoRI-EP WideEP disagg image (v0.29.0 vehicle).
+#   PER-MODEL image, isolated from the base vllm_disagg_inference Dockerfile
+#   and from glmv5.1, so DSV4 can pin its own vLLM/AITER/MoRI.
+#   Traced separately from v0280
+#   (docker/vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile).
+#   Do not retag over v0280. Do not mix scores with --image v0280 cells.
 #
-# NEXT DSV4 vehicle, traced separately from the v0.28.0 image
-# (docker/vllm_disagg_recent_source_v0280_aiter_1d872fa_mori6fcf6b3_triton_kernels.ubuntu.amd.Dockerfile).
-# Do not retag over v0280. Do not mix scores with --image v0280 cells.
-#
-# Pins (queried 2026-09-09):
+#   PINS (kept in this header, not the filename; queried 2026-09-09):
 #   - BASE  -> vllm/vllm-openai-rocm:v0.29.0
 #              digest sha256:e5e47f6aaab675c252c381f0dac237b31b10d87bb74d092b07fb4065efd7f5a1
 #              Hub amd64, pushed 2026-09-09. Tag 98dff2a81d747d1dba01a47f939f48c3526d4206.
@@ -24,6 +26,9 @@
 #   - MoRI  -> ROCm/mori main 07bdace2ff7306928871f85afd92f1d2aae13ad0 (2026-09-09)
 #              +24 over 6fcf6b3. Nearest tag v1.2.3 = 879983bdbd8c (+a few on main).
 #   - triton_kernels -> ROCm/triton @ 0f380657 (v0.29.0 Dockerfile.rocm, unchanged)
+#   Image tag (do not retag):
+#     rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk
+#   Wrapper: --image v0290
 #
 # Hub v0.29.0 is STILL ROCm 7.2.3 (docker/Dockerfile.rocm_base
 # rocm/dev-ubuntu-22.04:7.2.3-complete). Hub AITER_BRANCH/MORI_BRANCH in
@@ -43,7 +48,7 @@
 #
 # Build on a REMOTE host (not WSL, not login useocpslog-002). Repo root:
 #   docker pull vllm/vllm-openai-rocm:v0.29.0
-#   docker build -f docker/vllm_disagg_recent_source_v0290_aiter_10f8874_mori07bdace_triton_kernels.ubuntu.amd.Dockerfile \
+#   docker build -f docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile \
 #     -t rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk .
 #   docker push rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk
 #

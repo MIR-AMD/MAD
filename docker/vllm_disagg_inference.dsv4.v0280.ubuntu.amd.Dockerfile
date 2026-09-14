@@ -7,7 +7,20 @@
 #
 #################################################################################
 # =============================================================================
-# vllm_disagg_recent_source_v0280_aiter_1d872fa_mori6fcf6b3_triton_kernels.ubuntu.amd.Dockerfile
+# vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile
+#   DeepSeek-V4 Flash/Pro MoRI-EP WideEP disagg image (v0.28.0 vehicle).
+#   PER-MODEL image, isolated from the base vllm_disagg_inference Dockerfile
+#   and from glmv5.1, so DSV4 can pin its own vLLM/AITER/MoRI.
+#
+#   PINS (kept in this header, not the filename):
+#     BASE / vLLM     vllm/vllm-openai-rocm:v0.28.0  (2cf0a691…, tag v0.28.0)
+#     AITER           ROCm/aiter @ 1d872fa07aad…  (from source)
+#     MoRI            ROCm/mori @ 6fcf6b386786…
+#     flydsl          ==0.3.1
+#     triton_kernels  ROCm/triton @ 0f380657
+#   Image tag (do not retag):
+#     rocm/pytorch-private:vllm-recent-source-basem-v0280-aiter-1d872fa-fd031-mori6fcf6b3-tk
+#   Wrapper: --image v0280
 #
 # TOP RUNG of a three-image ladder. Each rung moves exactly one variable, so a
 # regression can be attributed instead of guessed:
@@ -122,7 +135,7 @@
 #
 # Build on a REMOTE host (not WSL, not login useocpslog-002). Repo root:
 #   docker pull vllm/vllm-openai-rocm:v0.28.0
-#   docker build -f docker/vllm_disagg_recent_source_v0280_aiter_1d872fa_mori6fcf6b3_triton_kernels.ubuntu.amd.Dockerfile \
+#   docker build -f docker/vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile \
 #     -t rocm/pytorch-private:vllm-recent-source-basem-v0280-aiter-1d872fa-fd031-mori6fcf6b3-tk .
 #   docker push rocm/pytorch-private:vllm-recent-source-basem-v0280-aiter-1d872fa-fd031-mori6fcf6b3-tk
 #

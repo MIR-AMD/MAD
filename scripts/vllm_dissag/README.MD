@@ -97,23 +97,17 @@ so every GLM DSA fix has to be in-source in that image. Add a
 `vllm_disagg_inference.<model>.ubuntu.amd.Dockerfile` per future model that needs its
 own pins rather than repinning the shared one.
 
-`DeepSeek-V4-Flash-FP8` / `DeepSeek-V4-Pro-FP8` use the v0.28.0 MoRI-EP image
-(`--image v0280`) for in-flight validation:
+`DeepSeek-V4-Flash-FP8` / `DeepSeek-V4-Pro-FP8` keep two per-model images (same
+naming as `vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile`). Pins live in
+each Dockerfile header, not the filename:
 
-`docker/vllm_disagg_recent_source_v0280_aiter_1d872fa_mori6fcf6b3_triton_kernels.ubuntu.amd.Dockerfile`
+- `--image v0280` — `docker/vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile`
+- `--image v0290` — `docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile`
 
-Pins (vLLM v0.28.0, AITER `1d872fa` from source, MoRI `6fcf6b3`) are in the Dockerfile
-header. Do not docker-build on login or WSL. Submit with `./run_wideep_bench.sh` and
-**always pass `--image v0280`**.
-
-The next traced image is v0.29.0 (`--image v0290`), a *separate* Dockerfile — do not
-overwrite the v0280 tag:
-
-`docker/vllm_disagg_recent_source_v0290_aiter_10f8874_mori07bdace_triton_kernels.ubuntu.amd.Dockerfile`
-
-vLLM `v0.29.0` (`98dff2a`), AITER main `10f8874` from source, MoRI main `07bdace`,
-`flydsl==0.3.2`. Hub `vllm/vllm-openai-rocm:v0.29.0` is still ROCm 7.2.3; do not
-install UFB `+rocm10.1.0a` AITER wheels on it. Do not mix v0290 scores with v0280.
+Do not docker-build on login or WSL. Submit with `./run_wideep_bench.sh` and
+**always pass `--image`**. Do not mix v0290 scores with v0280. Hub
+`vllm/vllm-openai-rocm:v0.29.0` is still ROCm 7.2.3; do not install UFB
+`+rocm10.1.0a` AITER wheels on it.
 
 Then `export DOCKER_IMAGE_NAME=<tag>` (or a published image) before submitting. The slurm
 `docker pull`s the image on every node, so a local-only tag must be pushed to a registry the nodes

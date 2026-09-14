@@ -10,7 +10,8 @@
 #   ./run_wideep_bench.sh niah dsv3 4p4d --image e03
 #   ./run_wideep_bench.sh smoke dsv4fls 1p1d --image v0280
 #   ./run_wideep_bench.sh smoke dsv4pro 1p1d --image v0280
-#   ./run_wideep_bench.sh smoke glm 2p2d
+#   ./run_wideep_bench.sh validate dsv4fls ep16 --image v0290
+#   ./run_wideep_bench.sh validate dsv4pro ep32 --image v0290
 #   ./run_wideep_bench.sh niah glm 4p4d --dry-run
   # OpenAI MRCR (no prime). Flash 2-needle through 32k, then Pro if MMR looks sane:
   #   MRCR_PER_BIN=8 MRCR_DATA_DIR=/shared_inference/bbarakat/datasets/openai_mrcr \\
@@ -47,8 +48,10 @@ IMG_MORI624="rocm/pytorch-private:vllm-recent-source-basem-d626108b-aiter-1d872f
 # not a newer vLLM.
 IMG_V0280="rocm/pytorch-private:vllm-recent-source-basem-v0280-aiter-1d872fa-fd031-mori6fcf6b3-tk"
 # vLLM release v0.29.0 (98dff2a) + AITER main 10f8874 + MoRI main 07bdace.
-# Separate Dockerfile from v0280. Do not mix scores. Hub base is still ROCm 7.2.3
-# — AITER is source-built, not the UFB +rocm10.1.0a wheel.
+# Dockerfile: docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile
+# (v0280 is docker/vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile).
+# Do not mix scores. Hub base is still ROCm 7.2.3 — AITER is source-built,
+# not the UFB +rocm10.1.0a wheel.
 IMG_V0290="rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk"
 IMG_026="rocm/pytorch-private:vllm-recent-source-basem-20260815"
 
@@ -62,7 +65,7 @@ usage() {
     cat <<'EOF'
 Usage: ./run_wideep_bench.sh BENCH MODEL TOPO [flags]
 
-  BENCH   niah | smoke | mrcr
+  BENCH   niah | smoke | mrcr | validate
   MODEL   glm | glm51 | glm52 | dsv3 | dsv4fls | dsv4pro | hy3 | hy3p | GLM-5.1-FP8 | ...
   TOPO    1p1d | 2p2d | 3p3d | 4p4d | ep8 | ep16 | ep24 | ep32
           asymmetric: 1p2d | 2p1d | 2p3d | 3p2d  (driver derives per-role DP)
@@ -186,6 +189,24 @@ case "$BENCH" in
             BENCHMARK_CON="${BENCHMARK_CON:-1 8 16 32}"
         fi
         ;;
+    validate)
+        # One allocation: curl (moriio.sh) then NIAH then smoke. Do not halt
+        # NIAH on a failed rung — smoke still has to run.
+        BENCHMARK_SCRIPT=validate
+        NIAH_WORDS="${NIAH_WORDS:-2000,8000,16000,20000,28000,35000}"
+        NIAH_SEEDS="${NIAH_SEEDS:-0}"
+        NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-0}"
+        NIAH_PAIR_SLEEP_S="${NIAH_PAIR_SLEEP_S:-30}"
+        NIAH_WARMUP_SCORE_SLEEP_S="${NIAH_WARMUP_SCORE_SLEEP_S:-5}"
+        BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS:-1024/1024}"
+        if [[ "$SHORT" == "dsv4pro" && "$TOPO" == "4p4d" ]]; then
+            BENCHMARK_CON="${BENCHMARK_CON:-8 16 32}"
+            STEP_SEC_PER_TOK="${STEP_SEC_PER_TOK:-3}"
+            STEP_TIMEOUT="${STEP_TIMEOUT:-7200}"
+        elif [[ "$SHORT" == "dsv4fls" || "$SHORT" == "dsv4pro" ]]; then
+            BENCHMARK_CON="${BENCHMARK_CON:-1 8 16 32}"
+        fi
+        ;;
     mrcr)
         # OpenAI MRCR. Flash first, 2-needle, bins that fit 40k. No prime.
         # Full 100/bin will not fit a 4h PD job — default PER_BIN=8.
@@ -206,13 +227,16 @@ case "$BENCH" in
         # A leftover NIAH_LIST_PRIME from a previous submit would zero MMR.
         unset NIAH_LIST_PRIME || true
         ;;
-    *) echo "Error: unknown BENCH '$BENCH' (niah|smoke|mrcr)" >&2; usage ;;
+    *) echo "Error: unknown BENCH '$BENCH' (niah|smoke|mrcr|validate)" >&2; usage ;;
 esac
 
-# Walltime scales with node count (AITER JIT).
+# Walltime scales with node count (AITER JIT). validate uses niah's budget
+# (load once, then niah + smoke).
 ASSOC_MAX_WALL="${ASSOC_MAX_WALL:-08:00:00}"
+WT_BENCH="$BENCH"
+[[ "$BENCH" == "validate" ]] && WT_BENCH=niah
 if [[ -z "$TIME_ARG" ]]; then
-    case "$BENCH-$TOPO" in
+    case "$WT_BENCH-$TOPO" in
         niah-1p1d)  TIME_ARG=06:00:00 ;;
         niah-2p2d)  TIME_ARG=08:00:00 ;;
         niah-3p3d)  TIME_ARG=10:00:00 ;;
@@ -229,7 +253,7 @@ if [[ -z "$TIME_ARG" ]]; then
     # Flash ~69k shards; 4h is tight for first load + JIT. Pro is 865 GB.
     # 2P/2D is an EP16 MoRI decode probe (PROXY_ROUTE_DP=8). Not an ITL score.
     if [[ "$SHORT" == "dsv4fls" ]]; then
-        case "$BENCH-$TOPO" in
+        case "$WT_BENCH-$TOPO" in
             smoke-1p1d) TIME_ARG=06:00:00 ;;
             smoke-2p2d) TIME_ARG=08:00:00 ;;
             niah-1p1d|niah-2p2d) TIME_ARG=12:00:00 ;;
@@ -237,7 +261,7 @@ if [[ -z "$TIME_ARG" ]]; then
         esac
     fi
     if [[ "$SHORT" == "dsv4pro" ]]; then
-        case "$BENCH-$TOPO" in
+        case "$WT_BENCH-$TOPO" in
             smoke-1p1d) TIME_ARG=08:00:00 ;;
             smoke-2p2d) TIME_ARG=10:00:00 ;;
             niah-1p1d|niah-2p2d|niah-4p4d) TIME_ARG=12:00:00 ;;
@@ -247,7 +271,7 @@ if [[ -z "$TIME_ARG" ]]; then
     # Asymmetric topologies match no case arm above and would leave TIME_ARG
     # empty, which sbatch takes as no limit request. Fall back on node count.
     if [[ -z "$TIME_ARG" ]]; then
-        case "$BENCH" in
+        case "$WT_BENCH" in
             niah)  TIME_ARG=$(printf '%02d:00:00' $(( N < 6 ? 6 : 8 )) ) ;;
             mrcr)  TIME_ARG=04:00:00 ;;
             smoke) TIME_ARG=$(printf '%02d:00:00' $(( N < 6 ? 4 : 6 )) ) ;;
@@ -426,7 +450,7 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
     # Product NIAH: original 6-rung sizes, 64-token answers, bare prompt
     # (no <User>/<Assistant> wrap). Do not inherit NIAH_DS_WRAP from the
     # submit environment — that silently wrapped 218099/218112.
-    if [[ "$BENCH" == "niah" ]]; then
+    if [[ "$BENCH" == "niah" || "$BENCH" == "validate" ]]; then
         # 27 Aug: hybrid is the standard method — PR-176's system+user through
         # the DeepSeek template PLUS a restatement after the haystack. Faithful
         # pr176 puts the ask before the haystack only, which collapses on DSV4
@@ -518,7 +542,7 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
     if [[ "$IMG_TAG" == "e03" || "$IMG_TAG" == "e03tk" || "$IMG_TAG" == "5a4c" || "$IMG_TAG" == "d626" || "$IMG_TAG" == "mori624" ]]; then
         EXTRA_ENV+=(VLLM_ROCM_USE_AITER_FP8BMM=false)
     fi
-    if [[ "$BENCH" == "niah" ]]; then
+    if [[ "$BENCH" == "niah" || "$BENCH" == "validate" ]]; then
         # 27 Aug: hybrid is the standard method — PR-176's system+user through
         # the DeepSeek template PLUS a restatement after the haystack. Faithful
         # pr176 puts the ask before the haystack only, which collapses on DSV4
@@ -604,8 +628,8 @@ echo "BENCH=$BENCH  MODEL=$MODEL_NAME  TOPO=$TOPO  EP=$EP  xP=$xP yD=$yD  N=$N"
 echo "IMAGE=$DOCKER_IMAGE_NAME"
 echo "PROXY_TYPE=${PROXY_TYPE:-moriio_toy}  PROXY_ROUTE_DP=$PROXY_ROUTE_DP  SKIP_MORIIO_DP=${ROUTER_SKIP_MORIIO_DP_SIZE}  PING=${MORI_PROXY_PING_PORT}  CONC=${PROXY_MAX_CONCURRENCY}  WIDE_EP=1"
 echo "TIME=$TIME_ARG"
-[[ "$BENCH" == "smoke" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"
-[[ "$BENCH" == "niah" ]] && echo "NIAH_METHOD=${NIAH_METHOD:-}  NIAH_WORDS=$NIAH_WORDS  NIAH_SEEDS=$NIAH_SEEDS  HALT=$NIAH_HALT_ON_FAIL  MAXTOK=${NIAH_MAXTOK:-}  WARMUP=${NIAH_WARMUP:-}  TIMEOUT=${NIAH_TIMEOUT:-}  WRAP=0  TERSE=${NIAH_TERSE:-0}  STOP_BLANK=${NIAH_STOP_BLANK:-0}  MINTOK=${NIAH_MIN_TOKENS:-0}  PRIME=${NIAH_LIST_PRIME:-}  STOP=${NIAH_STOP:-}  LOGPROBS=${NIAH_LOGPROBS:-0}"
+[[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"
+[[ "$BENCH" == "niah" || "$BENCH" == "validate" ]] && echo "NIAH_METHOD=${NIAH_METHOD:-}  NIAH_WORDS=$NIAH_WORDS  NIAH_SEEDS=$NIAH_SEEDS  HALT=$NIAH_HALT_ON_FAIL  MAXTOK=${NIAH_MAXTOK:-}  WARMUP=${NIAH_WARMUP:-}  TIMEOUT=${NIAH_TIMEOUT:-}  WRAP=0  TERSE=${NIAH_TERSE:-0}  STOP_BLANK=${NIAH_STOP_BLANK:-0}  MINTOK=${NIAH_MIN_TOKENS:-0}  PRIME=${NIAH_LIST_PRIME:-}  STOP=${NIAH_STOP:-}  LOGPROBS=${NIAH_LOGPROBS:-0}"
 [[ "$BENCH" == "mrcr" ]] && echo "MRCR needles=${MRCR_NEEDLES:-2}  bins=${MRCR_BINS:-}  per_bin=${MRCR_PER_BIN:-}  MAXTOK=${MRCR_MAXTOK:-}  TIMEOUT=${MRCR_TIMEOUT:-}  MAX_CTX=${MRCR_MAX_CTX:-}  THINKING=chat  PRIME=OFF  DATA_DIR=${MRCR_DATA_DIR:-hf}"
 [[ ${#EXTRA_ENV[@]} -gt 0 ]] && echo "EXTRA ${EXTRA_ENV[*]}"
 echo "JOB_NAME=$JOB_NAME  ACCOUNT=$ACCOUNT  PARTITION=$PARTITION  QOS=${QOS:-default}  ${SBATCH_LOC[*]:-any-node}"
@@ -652,13 +676,13 @@ export PROXY_HANDSHAKE_PER_POD="${PROXY_HANDSHAKE_PER_POD:-}"
 export ROUTER_SKIP_MORIIO_DP_SIZE
 # 220693: 36367. 25000 dodges the ephemeral-port steal (218125/218144) if ping fails.
 export MORI_PROXY_PING_PORT
-if [[ "$BENCH" == "smoke" ]]; then
+if [[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]]; then
     export BENCHMARK_COMBINATIONS
     [[ -n "${BENCHMARK_CON:-}" ]] && export BENCHMARK_CON
     [[ -n "${STEP_SEC_PER_TOK:-}" ]] && export STEP_SEC_PER_TOK
     [[ -n "${STEP_TIMEOUT:-}" ]] && export STEP_TIMEOUT
 fi
-if [[ "$BENCH" == "niah" ]]; then
+if [[ "$BENCH" == "niah" || "$BENCH" == "validate" ]]; then
     export NIAH_WORDS NIAH_SEEDS NIAH_HALT_ON_FAIL
     export NIAH_PAIR_SLEEP_S NIAH_WARMUP_SCORE_SLEEP_S
     [[ -n "${NIAH_METHOD:-}" ]] && export NIAH_METHOD
