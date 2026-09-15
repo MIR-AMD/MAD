@@ -154,15 +154,16 @@ connector_runtime_patch() {
     # Wei combine() original topk is a vLLM mori.py bug, not MoRI. v0.29.0
     # 98dff2a still passes dispatched topk_ids into combine() — keep this.
     _mori_combine_original_topk_fix
-    # Connector DSV4 patchers: stock v0.29.0 MoRIIO first. Re-enable one
-    # function at a time if boot or WRITE crashes (expected order):
-    #   _dsv4_moriio_attn_backend_fix          get_attn_backend / fp8_ds_mla
+    # 434011: stock get_attn_backend(use_mla=True) rejects fp8_ds_mla
+    # (ROCM_AITER_MLA / TRITON_MLA / ROCM_AITER_TRITON_MLA: kv_cache_dtype
+    # not supported). Connector must pick ROCM_FLASHMLA_SPARSE_DSV4.
+    _dsv4_moriio_attn_backend_fix
+    # Next if boot/WRITE crashes:
     #   _dsv4_skip_noncontiguous_register      .view(uint8) on strided KV
     #   _dsv4_mixed_block_size_fix             SWA 64 != MLA 256
     #   _dsv4_transfer_gate_fix                wait_for_save dumps SWA .attn
     #   _dsv4_attn_transfer_fix                group-0 .attn never WRITTEN
     #   _dsv4_rdma_wait_fix                    CQE wait inside write lock
-    # HMA=1 stack stays in this file, not applied (DSV4_ENABLE_HMA=0).
 }
 
 _mori_combine_original_topk_fix() {
