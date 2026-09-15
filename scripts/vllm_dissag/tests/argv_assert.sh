@@ -102,6 +102,7 @@ _has "$(cat "$SLURM")" '${USE_INDUCTOR_GRAPH_PARTITION:+-e USE_INDUCTOR_GRAPH_PA
 echo ""
 echo "=== slurm forwards DSV4 MoRI-EP / NIAH knobs ==="
 _has "$S" '${DSV4_EAGER:+-e DSV4_EAGER=' "slurm forwards DSV4_EAGER"
+_has "$S" '${DSV4_DECODE_TIMER:+-e DSV4_DECODE_TIMER=' "slurm forwards DSV4_DECODE_TIMER"
 _has "$S" '-e SKIP_RUNTIME_PATCH=${SKIP_RUNTIME_PATCH:-0}' "slurm forces SKIP_RUNTIME_PATCH=0 (overrides image ENV)"
 _has "$S" '${DSV4_TRANSFER_ATTN:+-e DSV4_TRANSFER_ATTN=' "slurm forwards DSV4_TRANSFER_ATTN"
 _has "$S" '${NIAH_HALT_ON_FAIL:+-e NIAH_HALT_ON_FAIL=' "slurm forwards NIAH_HALT_ON_FAIL"

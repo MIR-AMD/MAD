@@ -253,6 +253,8 @@ connector_runtime_patch() {
     # (ROCM_AITER_MLA / TRITON_MLA / ROCM_AITER_TRITON_MLA: kv_cache_dtype
     # not supported). Connector must pick ROCM_FLASHMLA_SPARSE_DSV4.
     _dsv4_moriio_attn_backend_fix
+    # 434150: ~600 ms ITL. Split indexer / MLA / MoE all2all. Default off.
+    _dsv4_decode_step_timer
     # Next if boot/WRITE crashes:
     #   _dsv4_skip_noncontiguous_register      .view(uint8) on strided KV
     #   _dsv4_mixed_block_size_fix             SWA 64 != MLA 256
@@ -299,6 +301,32 @@ _dsv4_moriio_attn_backend_fix() {
     echo "[dsv4-attn] applying ${_py} against ${_vllm_dir}"
     python3 "${_py}" "${_vllm_dir}" 2>&1 || {
         echo "Error: [dsv4-attn] patch failed — Flash PD would die in get_attn_backend. Aborting." >&2
+        exit 1
+    }
+}
+
+# Decode ITL split (434150 ~600 ms/tok). Default off. Prefer DSV4_EAGER=1
+# so MLA/MoE wraps are not hidden inside FULL_DECODE_ONLY replay.
+_dsv4_decode_step_timer() {
+    if [ "${DSV4_DECODE_TIMER:-0}" != "1" ]; then
+        echo "[dsv4-timer] DSV4_DECODE_TIMER=${DSV4_DECODE_TIMER:-0}: no step timer"
+        return 0
+    fi
+    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+    local _py="${_patch_dir}/apply_dsv4_decode_step_timer.py"
+    if [ ! -f "${_py}" ]; then
+        echo "Error: [dsv4-timer] ${_py} not found. Aborting." >&2
+        exit 1
+    fi
+    local _vllm_dir
+    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
+    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
+        echo "Error: [dsv4-timer] cannot locate vLLM install dir. Aborting." >&2
+        exit 1
+    fi
+    echo "[dsv4-timer] DSV4_DECODE_TIMER=1 applying ${_py} against ${_vllm_dir}"
+    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
+        echo "Error: [dsv4-timer] patch failed. Aborting." >&2
         exit 1
     }
 }
