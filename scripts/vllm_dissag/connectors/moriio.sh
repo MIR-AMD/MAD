@@ -154,17 +154,15 @@ connector_runtime_patch() {
     # Wei combine() original topk is a vLLM mori.py bug, not MoRI. v0.29.0
     # 98dff2a still passes dispatched topk_ids into combine() — keep this.
     _mori_combine_original_topk_fix
-    _dsv4_moriio_attn_backend_fix
-    _dsv4_skip_indexer_register
-    _dsv4_skip_noncontiguous_register
-    _dsv4_mixed_block_size_fix
-    _dsv4_transfer_gate_fix
-    _dsv4_supports_hma_fix
-    _dsv4_hma_upstream_geom_fix
-    _dsv4_region_len_span_fix
-    _dsv4_attn_transfer_fix
-    _dsv4_chunked_prefill_hma_fix
-    _dsv4_rdma_wait_fix
+    # Connector DSV4 patchers: stock v0.29.0 MoRIIO first. Re-enable one
+    # function at a time if boot or WRITE crashes (expected order):
+    #   _dsv4_moriio_attn_backend_fix          get_attn_backend / fp8_ds_mla
+    #   _dsv4_skip_noncontiguous_register      .view(uint8) on strided KV
+    #   _dsv4_mixed_block_size_fix             SWA 64 != MLA 256
+    #   _dsv4_transfer_gate_fix                wait_for_save dumps SWA .attn
+    #   _dsv4_attn_transfer_fix                group-0 .attn never WRITTEN
+    #   _dsv4_rdma_wait_fix                    CQE wait inside write lock
+    # HMA=1 stack stays in this file, not applied (DSV4_ENABLE_HMA=0).
 }
 
 _mori_combine_original_topk_fix() {
@@ -827,32 +825,42 @@ connector_start_proxy() {
         sleep 20
     fi
 
-    # Always run, including NIAH. 433093 used max_tokens=10 and Flash emitted
-    # JSON junk (`"label": "0"`) — too short to tell English from garbage.
-    # Three TYPE-1 prompts, 64 tok, verdict=COHERENT only if the needle is in
-    # the completion. Do not abort the bench on GARBAGE (NIAH still runs).
-    # Full bodies + verdicts go to curl_*.log (same dir as niah_/benchmark_).
-    # pd_vllm_bench only gets the path + summary — do not dump JSON there.
+    # Always run, including NIAH. Chat QA on /v1/chat/completions — a bare
+    # /v1/completions stem continues OpenAI JSON dumps (433991). NIAH stays
+    # /v1/completions + product stem. Do not abort the bench if a reply
+    # fails. Full bodies + verdicts go to curl_*.log.
     local _CURL_LOG="/run_logs/${SLURM_JOB_ID}/curl_${SLURM_JOB_ID}_xP${xP}_yD${yD}_${MODEL_NAME}.log"
-    echo "===== smoke curl: 3 prompts -> ${_CURL_LOG} ====="
-    python3 - "$BENCHMARK_PORT" "$_CURL_LOG" <<'PY'
+    echo "===== smoke curl: 3 chat QA -> ${_CURL_LOG} ====="
+    python3 - "$BENCHMARK_PORT" "$_CURL_LOG" "${MODEL_NAME}" <<'PY'
 import json, sys, urllib.error, urllib.request
-port, log_path = sys.argv[1], sys.argv[2]
-url = f"http://127.0.0.1:{port}/v1/completions"
+port, log_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
+url = f"http://127.0.0.1:{port}/v1/chat/completions"
+# (tag, user question, substring the answer must contain)
 probes = (
-    ("amd", "Who is AMD CEO?", "lisa"),
-    ("france", "What is the capital of France?", "paris"),
-    ("uk", "What is the capital of the United Kingdom?", "london"),
+    ("amd", "Who is the CEO of AMD? Answer in one sentence.", "lisa"),
+    ("france", "What is the capital of France? Answer in one sentence.", "paris"),
+    ("uk", "What is the capital of the United Kingdom? Answer in one sentence.", "london"),
 )
 n_ok = 0
-lines = [f"===== smoke curl: 3 prompts port={port} ====="]
-for tag, prompt, needle in probes:
-    lines.append(f"===== curl[{tag}] {prompt!r} =====")
-    body = json.dumps(
-        {"prompt": prompt, "temperature": 0, "max_tokens": 64, "top_k": 1}
-    ).encode()
+lines = [f"===== smoke curl: 3 chat QA port={port} model={model} ====="]
+for tag, question, expect in probes:
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 64,
+        "top_k": 1,
+        "messages": [{"role": "user", "content": question}],
+    }
+    lines.append(f"===== curl[{tag}] =====")
+    lines.append(
+        "curl http://127.0.0.1:%s/v1/chat/completions \\\n"
+        "  -H \"Content-Type: application/json\" \\\n"
+        "  -d '%s'" % (port, json.dumps(payload, indent=2))
+    )
     req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
@@ -864,23 +872,19 @@ for tag, prompt, needle in probes:
         continue
     lines.append(raw)
     try:
-        text = json.loads(raw).get("choices", [{}])[0].get("text") or ""
+        choice = json.loads(raw).get("choices", [{}])[0]
+        msg = choice.get("message") or {}
+        text = (msg.get("content") or choice.get("text") or "").strip()
     except Exception:
         text = ""
-    letters = sum(ch.isalpha() for ch in text)
-    ascii_en = any("a" <= ch.lower() <= "z" for ch in text)
-    hit = needle in text.lower()
-    garbage = (not hit) or letters < 8 or not ascii_en
-    verdict = "GARBAGE" if garbage else "COHERENT"
-    if verdict == "COHERENT":
+    answered = expect in text.lower() and len(text) >= 8
+    verdict = "ANSWERED" if answered else "NO_ANSWER"
+    if answered:
         n_ok += 1
-    rec = (
-        f"[curl] {verdict}[{tag}] needle={needle!r} letters={letters} "
-        f"text={text[:240]!r}"
-    )
+    rec = f"[curl] {verdict}[{tag}] expect={expect!r} reply={text[:240]!r}"
     lines.append(rec)
     print(rec, flush=True)
-summary = f"[curl] summary {n_ok}/3 COHERENT"
+summary = f"[curl] summary {n_ok}/3 ANSWERED"
 lines.append(summary)
 print(summary, flush=True)
 with open(log_path, "w", encoding="utf-8") as fh:
