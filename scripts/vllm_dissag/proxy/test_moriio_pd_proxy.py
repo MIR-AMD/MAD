@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Stdlib tests for PD proxy routing + logging. No Quart/GPU required."""
+import asyncio
 import io
 import logging
 import os
+import time
 import unittest
 from unittest.mock import patch
 
 from moriio_pd_proxy import (
     TRANSFER_PREFIX,
     _handshake_hosts,
+    _stall_watch,
     build_kv_transfer_params,
     configure_logging,
     http_backend,
@@ -350,6 +353,49 @@ class TransferIdTests(unittest.TestCase):
     def test_transfer_prefix_defined(self):
         self.assertEqual(TRANSFER_PREFIX, "tx")
         self.assertTrue(f"{TRANSFER_PREFIX}-deadbeef".startswith("tx-"))
+
+
+class StallWatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chunk_progress_is_not_a_stall(self):
+        stop = asyncio.Event()
+        last = [time.monotonic()]
+        log = io.StringIO()
+        handler = logging.StreamHandler(log)
+        logger = logging.getLogger("moriio_pd_proxy")
+        logger.addHandler(handler)
+        prev = logger.level
+        logger.setLevel(logging.WARNING)
+        watch = asyncio.create_task(_stall_watch("decode STREAM", stop, 0.08, last))
+        try:
+            for _ in range(6):
+                await asyncio.sleep(0.03)
+                last[0] = time.monotonic()
+            stop.set()
+            await watch
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(prev)
+        self.assertNotIn("STALL", log.getvalue())
+
+    async def test_idle_stream_warns(self):
+        stop = asyncio.Event()
+        last = [time.monotonic()]
+        log = io.StringIO()
+        handler = logging.StreamHandler(log)
+        logger = logging.getLogger("moriio_pd_proxy")
+        logger.addHandler(handler)
+        prev = logger.level
+        logger.setLevel(logging.WARNING)
+        watch = asyncio.create_task(_stall_watch("decode STREAM", stop, 0.05, last))
+        try:
+            await asyncio.sleep(0.18)
+            stop.set()
+            await watch
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(prev)
+        self.assertIn("STALL", log.getvalue())
+        self.assertIn("idle", log.getvalue())
 
 
 if __name__ == "__main__":

@@ -198,16 +198,35 @@ def _json_body_to_sse(body: bytes) -> bytes:
     return b"data: " + payload + b"\n\n" + b"data: [DONE]\n\n"
 
 
-async def _stall_watch(label: str, stop: asyncio.Event, interval: float = 10.0) -> None:
-    """WARN every ``interval`` s until ``stop`` so hung POSTs are visible."""
-    elapsed = 0.0
+async def _stall_watch(
+    label: str,
+    stop: asyncio.Event,
+    interval: float = 10.0,
+    last_progress: list[float] | None = None,
+) -> None:
+    """WARN after ``interval`` s with no progress, not wall time since start.
+
+    Prefill POST leaves ``last_progress`` None — headers should land in <1s,
+    so a 10s wait is a real hang. Decode STREAM must pass a one-slot list
+    updated on every byte: Flash 1024-token decode is ~0.5 s/tok (~10 min)
+    with first_chunk at ~3s (434017). The old wall-clock watch logged 801
+    STALL lines on a healthy SSE stream.
+    """
+    started = time.monotonic()
+    if last_progress is not None and not last_progress:
+        last_progress.append(started)
     while True:
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
             return
         except asyncio.TimeoutError:
-            elapsed += interval
-            logger.warning("STALL %s still waiting after %.0fs", label, elapsed)
+            now = time.monotonic()
+            idle = now - (last_progress[0] if last_progress is not None else started)
+            if idle + 1e-6 < interval:
+                continue
+            logger.warning(
+                "STALL %s still waiting after %.1fs idle", label, idle
+            )
 
 
 def _fail_source(side: str, tx: str, detail: str, exc: BaseException | None = None) -> None:
@@ -1328,11 +1347,13 @@ def create_app(state: ProxyState):
 
             async def _stream():
                 stop_s = asyncio.Event()
+                last_chunk = [time.monotonic()]
                 watch_s = asyncio.create_task(
                     _stall_watch(
                         f"decode STREAM {decode_url} rank={rank} tx={transfer_id}",
                         stop_s,
                         stall_s,
+                        last_chunk,
                     )
                 )
                 try:
@@ -1407,6 +1428,7 @@ def create_app(state: ProxyState):
                             break
                         nchunks += 1
                         nbytes += len(chunk)
+                        last_chunk[0] = time.monotonic()
                         if first and chunk:
                             logger.info(
                                 "decode STREAM first_chunk=%s bytes preview=%r tx=%s",

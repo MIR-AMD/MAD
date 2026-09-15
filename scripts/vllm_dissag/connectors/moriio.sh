@@ -831,11 +831,12 @@ connector_start_proxy() {
     # /v1/completions + product stem. Do not abort the bench if a reply
     # fails. Full bodies + verdicts go to curl_*.log.
     # Serve registers MODEL_PATH (434017: DeepSeek-V4-Flash-FP8 404'd).
-    # 200 tok: Flash fills ~64 with a Thinking outline before the answer.
+    # stream=true so first tokens print without waiting for max_tokens=200
+    # (~0.57 s/tok Flash PD; a non-stream 200-tok curl sat ~2 min).
     local _CURL_LOG="/run_logs/${SLURM_JOB_ID}/curl_${SLURM_JOB_ID}_xP${xP}_yD${yD}_${MODEL_NAME}.log"
     echo "===== smoke curl: 3 chat QA -> ${_CURL_LOG} ====="
     python3 - "$BENCHMARK_PORT" "$_CURL_LOG" "${MODEL_PATH}" <<'PY'
-import json, sys, urllib.error, urllib.request
+import json, sys, time, urllib.error, urllib.request
 port, log_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
 url = f"http://127.0.0.1:{port}/v1/chat/completions"
 # (tag, user question, substring the answer must contain)
@@ -845,18 +846,28 @@ probes = (
     ("uk", "What is the capital of the United Kingdom? Answer in one sentence.", "london"),
 )
 n_ok = 0
-lines = [f"===== smoke curl: 3 chat QA port={port} model={model} ====="]
+lines = [f"===== smoke curl: 3 chat QA stream port={port} model={model} ====="]
+
+
+def _delta_text(obj):
+    ch = (obj.get("choices") or [{}])[0]
+    delta = ch.get("delta") or {}
+    msg = ch.get("message") or {}
+    return delta.get("content") or msg.get("content") or ch.get("text") or ""
+
+
 for tag, question, expect in probes:
     payload = {
         "model": model,
         "temperature": 0,
         "max_tokens": 200,
         "top_k": 1,
+        "stream": True,
         "messages": [{"role": "user", "content": question}],
     }
     lines.append(f"===== curl[{tag}] =====")
     lines.append(
-        "curl http://127.0.0.1:%s/v1/chat/completions \\\n"
+        "curl -N http://127.0.0.1:%s/v1/chat/completions \\\n"
         "  -H \"Content-Type: application/json\" \\\n"
         "  -d '%s'" % (port, json.dumps(payload, indent=2))
     )
@@ -865,21 +876,55 @@ for tag, question, expect in probes:
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
+    text_parts = []
+    raw_parts = []
+    first_dt = None
+    t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
-            raw = resp.read().decode("utf-8", "replace")
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                s = line.decode("utf-8", "replace")
+                raw_parts.append(s)
+                if first_dt is None and s.strip():
+                    first_dt = time.monotonic() - t0
+                    rec = f"[curl] first_chunk[{tag}] dt={first_dt:.2f}s"
+                    lines.append(rec)
+                    print(rec, flush=True)
+                if not s.startswith("data:"):
+                    continue
+                data = s[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                piece = _delta_text(obj)
+                if piece:
+                    text_parts.append(piece)
+                    sys.stdout.write(piece)
+                    sys.stdout.flush()
+        if text_parts:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
     except Exception as exc:
         rec = f"[curl] FAIL[{tag}] {exc}"
         lines.append(rec)
         print(rec, flush=True)
         continue
+    raw = "".join(raw_parts)
     lines.append(raw)
-    try:
-        choice = json.loads(raw).get("choices", [{}])[0]
-        msg = choice.get("message") or {}
-        text = (msg.get("content") or choice.get("text") or "").strip()
-    except Exception:
-        text = ""
+    text = "".join(text_parts).strip()
+    if not text:
+        try:
+            choice = json.loads(raw).get("choices", [{}])[0]
+            msg = choice.get("message") or {}
+            text = (msg.get("content") or choice.get("text") or "").strip()
+        except Exception:
+            text = ""
     answered = expect in text.lower() and len(text) >= 8
     verdict = "ANSWERED" if answered else "NO_ANSWER"
     if answered:
