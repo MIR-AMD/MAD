@@ -830,9 +830,11 @@ connector_start_proxy() {
     # /v1/completions stem continues OpenAI JSON dumps (433991). NIAH stays
     # /v1/completions + product stem. Do not abort the bench if a reply
     # fails. Full bodies + verdicts go to curl_*.log.
+    # Serve registers MODEL_PATH (434017: DeepSeek-V4-Flash-FP8 404'd).
+    # 200 tok: Flash fills ~64 with a Thinking outline before the answer.
     local _CURL_LOG="/run_logs/${SLURM_JOB_ID}/curl_${SLURM_JOB_ID}_xP${xP}_yD${yD}_${MODEL_NAME}.log"
     echo "===== smoke curl: 3 chat QA -> ${_CURL_LOG} ====="
-    python3 - "$BENCHMARK_PORT" "$_CURL_LOG" "${MODEL_NAME}" <<'PY'
+    python3 - "$BENCHMARK_PORT" "$_CURL_LOG" "${MODEL_PATH}" <<'PY'
 import json, sys, urllib.error, urllib.request
 port, log_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
 url = f"http://127.0.0.1:{port}/v1/chat/completions"
@@ -848,7 +850,7 @@ for tag, question, expect in probes:
     payload = {
         "model": model,
         "temperature": 0,
-        "max_tokens": 64,
+        "max_tokens": 200,
         "top_k": 1,
         "messages": [{"role": "user", "content": question}],
     }
