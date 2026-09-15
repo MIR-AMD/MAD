@@ -225,6 +225,23 @@ _install_vllm_router_at_boot() {
     export ROUTER_BINARY="$dest"
 }
 
+# Patch roster for the TP8 (18 ms) vs PD (600 ms) ITL split.
+# TP8 colocated applied NONE of these. decode_hot can move per-token ITL;
+# write_boot cannot after first token. Status is also exported as
+# DSV4_PATCH_* for the decode-step timer header.
+_dsv4_patch_note() {
+    local name="$1" status="$2" path="$3"
+    echo "[dsv4-patch] name=${name} status=${status} path=${path}"
+    export "DSV4_PATCH_${name}=${status}"
+}
+
+_dsv4_patch_roster_dump() {
+    echo "[dsv4-patch-roster] TP8_DELTA: colocated TP8 applied NONE of these (Median ITL 18ms)."
+    echo "[dsv4-patch-roster] decode_hot combine=${DSV4_PATCH_COMBINE:-NOT_CALLED} attn_backend=${DSV4_PATCH_ATTN_BACKEND:-NOT_CALLED} timer=${DSV4_PATCH_TIMER:-NOT_CALLED} eager=${DSV4_EAGER:-0} transfer_attn=${DSV4_TRANSFER_ATTN:-0} hma=${DSV4_ENABLE_HMA:-0}"
+    echo "[dsv4-patch-roster] write_boot storage=${DSV4_PATCH_STORAGE:-NOT_CALLED} mixed_bs=${DSV4_PATCH_MIXED_BS:-NOT_CALLED} gate=${DSV4_PATCH_GATE:-NOT_CALLED} attn_xfer=${DSV4_PATCH_ATTN_XFER:-NOT_CALLED} rdma_wait=${DSV4_PATCH_RDMA_WAIT:-NOT_CALLED}"
+    echo "[dsv4-patch-roster] read: combine+attn_backend are ITL suspects (every decode step / kernel pick). write_boot is TTFT/WRITE. Timer: moe_combine vs mla vs indexer vs other. DSV4_EAGER=1 required or graph capture hides buckets."
+}
+
 connector_runtime_patch() {
     # Overlap cargo with engine boot (NODE0 / vllm_router only).
     _kick_vllm_router_boot_install
@@ -235,6 +252,10 @@ connector_runtime_patch() {
     fi
     if [ "${SKIP_RUNTIME_PATCH:-0}" = "1" ]; then
         echo "[dsv4] SKIP_RUNTIME_PATCH=1"
+        _dsv4_patch_note COMBINE SKIPPED decode_hot
+        _dsv4_patch_note ATTN_BACKEND SKIPPED decode_hot
+        _dsv4_patch_note TIMER SKIPPED profile
+        _dsv4_patch_roster_dump
         return 0
     fi
     if [ "${MORI_JIT_SCRUB:-1}" = "1" ]; then
@@ -246,21 +267,18 @@ connector_runtime_patch() {
         echo "[aiter-scrub] removing stale AITER JIT cache (${AITER_JIT_DIR:-/tmp/vllm_cache/aiter_jit})"
         rm -rf "${AITER_JIT_DIR:-/tmp/vllm_cache/aiter_jit}"/* 2>/dev/null || true
     fi
-    # Wei combine() original topk is a vLLM mori.py bug, not MoRI. v0.29.0
-    # 98dff2a still passes dispatched topk_ids into combine() — keep this.
+    # Product HMA=0 set. TP8 never ran any of these — they are the 600 ms
+    # suspects. decode_hot first; WRITE/boot next (curl/NIAH need them);
+    # timer last so it wraps already-patched combine().
     _mori_combine_original_topk_fix
-    # 434011: stock get_attn_backend(use_mla=True) rejects fp8_ds_mla
-    # (ROCM_AITER_MLA / TRITON_MLA / ROCM_AITER_TRITON_MLA: kv_cache_dtype
-    # not supported). Connector must pick ROCM_FLASHMLA_SPARSE_DSV4.
     _dsv4_moriio_attn_backend_fix
-    # 434150: ~600 ms ITL. Split indexer / MLA / MoE all2all. Default off.
+    _dsv4_skip_noncontiguous_register
+    _dsv4_mixed_block_size_fix
+    _dsv4_transfer_gate_fix
+    _dsv4_attn_transfer_fix
+    _dsv4_rdma_wait_fix
     _dsv4_decode_step_timer
-    # Next if boot/WRITE crashes:
-    #   _dsv4_skip_noncontiguous_register      .view(uint8) on strided KV
-    #   _dsv4_mixed_block_size_fix             SWA 64 != MLA 256
-    #   _dsv4_transfer_gate_fix                wait_for_save dumps SWA .attn
-    #   _dsv4_attn_transfer_fix                group-0 .attn never WRITTEN
-    #   _dsv4_rdma_wait_fix                    CQE wait inside write lock
+    _dsv4_patch_roster_dump
 }
 
 _mori_combine_original_topk_fix() {
@@ -281,6 +299,7 @@ _mori_combine_original_topk_fix() {
         echo "Error: [mori-combine] patch failed — EP32 would emit garbage. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note COMBINE APPLIED decode_hot
 }
 
 # DSV4 Flash: MoRIIO generic MLA selector rejects fp8_ds_mla (217457/217460).
@@ -303,6 +322,7 @@ _dsv4_moriio_attn_backend_fix() {
         echo "Error: [dsv4-attn] patch failed — Flash PD would die in get_attn_backend. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note ATTN_BACKEND APPLIED decode_hot
 }
 
 # Decode ITL split (434150 ~600 ms/tok). Default off. Prefer DSV4_EAGER=1
@@ -310,6 +330,7 @@ _dsv4_moriio_attn_backend_fix() {
 _dsv4_decode_step_timer() {
     if [ "${DSV4_DECODE_TIMER:-0}" != "1" ]; then
         echo "[dsv4-timer] DSV4_DECODE_TIMER=${DSV4_DECODE_TIMER:-0}: no step timer"
+        _dsv4_patch_note TIMER SKIPPED profile
         return 0
     fi
     local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
@@ -329,6 +350,7 @@ _dsv4_decode_step_timer() {
         echo "Error: [dsv4-timer] patch failed. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note TIMER APPLIED profile
 }
 
 # DSV4 indexer k_cache is block 64, MLA is 256 (217463). Skip-register was
@@ -477,6 +499,7 @@ _dsv4_skip_noncontiguous_register() {
         echo "Error: [dsv4-storage] patch failed — Flash PD would die on non-contiguous register. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note STORAGE APPLIED write_boot
 }
 
 # DSV4 Flash: SWA .attn is block 64, MLA is 256 (217473). Connector already
@@ -499,6 +522,7 @@ _dsv4_mixed_block_size_fix() {
         echo "Error: [dsv4-mixed-bs] patch failed — Flash PD would die on SWA 64 != MLA 256. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note MIXED_BS APPLIED write_boot
 }
 
 # DSV4 Flash: 217546. wait_for_save must not dump 64-block .attn. Log
@@ -522,6 +546,7 @@ _dsv4_transfer_gate_fix() {
         echo "Error: [dsv4-gate] patch failed — Flash DP1 WRITE would hang like 217546. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note GATE APPLIED write_boot
 }
 
 # DSV4 218040: the gate skipped every model.layers.N.attn — the only cache
@@ -535,6 +560,7 @@ _dsv4_attn_transfer_fix() {
     # exclusive: this is the HMA-off arm.
     if [ "${DSV4_ENABLE_HMA:-1}" != "0" ]; then
         echo "[dsv4-attn-xfer] skipped: DSV4_ENABLE_HMA=1 owns wait_for_save"
+        _dsv4_patch_note ATTN_XFER SKIPPED write_boot
         return 0
     fi
     local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
@@ -554,6 +580,7 @@ _dsv4_attn_transfer_fix() {
         echo "Error: [dsv4-attn-xfer] patch failed. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note ATTN_XFER APPLIED write_boot
 }
 
 # 218328 20-token cliff: last-chunk used len(groups)*smallest_page. 218687
@@ -604,6 +631,7 @@ _dsv4_rdma_wait_fix() {
         echo "Error: [dsv4-rdma-wait] patch failed — Flash WRITE 2+ would stay ~391s. Aborting." >&2
         exit 1
     }
+    _dsv4_patch_note RDMA_WAIT APPLIED write_boot
 }
 
 # connector_launch_worker <role> <dp_size> <dp_addr> <kv_role> <log_prefix> [dp_start_rank]
@@ -892,22 +920,36 @@ connector_start_proxy() {
                 --discovery-port "${PROXY_PING_PORT}"
                 --use-discovery
                 --dp-size-local "${DP_PARALLEL_SIZE_LOCAL}"
-                --expect-prefill "${xP}"
-                --expect-decode "${yD}"
                 --log-level "${_PROXY_LOG_LEVEL}"
                 --max-concurrency "${PROXY_MAX_CONCURRENCY:-512}"
             )
             if [[ -n "${PROXY_ROUTE_DP:-}" && "${PROXY_ROUTE_DP}" != "0" ]]; then
                 _PROXY_ARGS+=(--route-dp-size "${PROXY_ROUTE_DP}")
             fi
-            local _i
-            for ((_i=0; _i<xP && _i<${#IP_ARRAY[@]}; _i++)); do
-                _PROXY_ARGS+=(--prefill "http://${IP_ARRAY[$_i]}:${SERVE_PORT}")
-            done
-            for ((_i=xP; _i<${#IP_ARRAY[@]}; _i++)); do
-                _PROXY_ARGS+=(--decode "http://${IP_ARRAY[$_i]}:${SERVE_PORT}")
-            done
+            local _PREFILL_URL="http://${PREFILL_MASTER_ADDR}:${SERVE_PORT}"
+            local _DECODE_URL="http://${DECODE_MASTER_ADDR}:${SERVE_PORT}"
+            # Headless children never bind :20005 and never take HTTP. Same as
+            # vllm-router: one master URL per role. MORIIO_CHILD_HTTP=1 is the
+            # only path that POSTs ranks 8+ to a child, so keep every pod URL.
+            if [[ "${MORIIO_CHILD_HTTP:-0}" == "1" ]]; then
+                _PROXY_ARGS+=(--expect-prefill "${xP}" --expect-decode "${yD}")
+                local _i
+                for ((_i=0; _i<xP && _i<${#IP_ARRAY[@]}; _i++)); do
+                    _PROXY_ARGS+=(--prefill "http://${IP_ARRAY[$_i]}:${SERVE_PORT}")
+                done
+                for ((_i=xP; _i<${#IP_ARRAY[@]}; _i++)); do
+                    _PROXY_ARGS+=(--decode "http://${IP_ARRAY[$_i]}:${SERVE_PORT}")
+                done
+            else
+                _PROXY_ARGS+=(
+                    --expect-prefill 1
+                    --expect-decode 1
+                    --prefill "${_PREFILL_URL}"
+                    --decode "${_DECODE_URL}"
+                )
+            fi
             echo "Starting python PD proxy (DSV4 MoRI-EP): ${_PROXY_SCRIPT}"
+            echo "  prefill=${_PREFILL_URL}  decode=${_DECODE_URL}  child_http=${MORIIO_CHILD_HTTP:-0}"
             python "${_PROXY_SCRIPT}" "${_PROXY_ARGS[@]}" \
                 > >(tee -a /run_logs/${SLURM_JOB_ID}/proxy_NODE${NODE_RANK}.log >/dev/null) 2>&1 &
             proxy_pid=$!

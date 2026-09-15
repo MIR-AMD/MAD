@@ -46,6 +46,7 @@ ON = os.environ.get("DSV4_DECODE_TIMER", "0") == "1"
 EVERY = int(os.environ.get("DSV4_DECODE_TIMER_EVERY", "8"))
 MAX = int(os.environ.get("DSV4_DECODE_TIMER_MAX", "64"))
 DECODE_ONLY = os.environ.get("DSV4_DECODE_TIMER_DECODE_ONLY", "1") == "1"
+EAGER = os.environ.get("DSV4_EAGER", "0")
 
 _pairs: dict[str, list] = {}
 _wall0 = None
@@ -53,6 +54,8 @@ _in_step = False
 _logged = 0
 _step = 0
 _n_tok = -1
+_header_logged = False
+_capture_warned = False
 
 
 def _cuda():
@@ -112,12 +115,40 @@ class span:
             pass
 
 
+def _log_patch_header() -> None:
+    global _header_logged
+    if _header_logged or not _rank0():
+        return
+    _header_logged = True
+    log.info(
+        "[dsv4-patch-roster] decode_hot combine=%s attn_backend=%s timer=%s "
+        "eager=%s | write_boot storage=%s mixed_bs=%s gate=%s attn_xfer=%s "
+        "rdma_wait=%s | TP8 applied none of these",
+        os.environ.get("DSV4_PATCH_COMBINE", "NOT_CALLED"),
+        os.environ.get("DSV4_PATCH_ATTN_BACKEND", "NOT_CALLED"),
+        os.environ.get("DSV4_PATCH_TIMER", "NOT_CALLED"),
+        EAGER,
+        os.environ.get("DSV4_PATCH_STORAGE", "NOT_CALLED"),
+        os.environ.get("DSV4_PATCH_MIXED_BS", "NOT_CALLED"),
+        os.environ.get("DSV4_PATCH_GATE", "NOT_CALLED"),
+        os.environ.get("DSV4_PATCH_ATTN_XFER", "NOT_CALLED"),
+        os.environ.get("DSV4_PATCH_RDMA_WAIT", "NOT_CALLED"),
+    )
+
+
 def step_begin(n_tok: int = -1) -> None:
-    global _in_step, _pairs, _wall0, _n_tok
+    global _in_step, _pairs, _wall0, _n_tok, _capture_warned
     if not ON:
         return
     torch = _cuda()
     if torch is None or _capturing(torch):
+        if ON and torch is not None and _capturing(torch) and not _capture_warned:
+            _capture_warned = True
+            if _rank0():
+                log.warning(
+                    "[dsv4-timer] CUDA graph capture hides indexer/mla/moe "
+                    "buckets; set DSV4_EAGER=1 (never --enforce-eager)"
+                )
         _in_step = False
         return
     _in_step = True
@@ -176,10 +207,11 @@ def step_end() -> None:
     if _logged >= MAX:
         return
     _logged += 1
+    _log_patch_header()
     log.info(
         "[dsv4-timer] step=%d n_tok=%s wall=%.1f indexer=%.1f mla=%.1f "
         "moe_dispatch=%.1f moe_combine=%.1f other=%.1f n_idx=%d n_mla=%d "
-        "n_disp=%d n_comb=%d",
+        "n_disp=%d n_comb=%d eager=%s",
         _step,
         _n_tok,
         wall,
@@ -192,6 +224,7 @@ def step_end() -> None:
         len(_pairs.get("mla", [])),
         len(_pairs.get("moe_dispatch", [])),
         len(_pairs.get("moe_combine", [])),
+        EAGER,
     )
 
 
@@ -400,6 +433,9 @@ def selftest() -> int:
     helper = open(os.path.join(tmp, "_dsv4_step_timer.py")).read()
     if "moe_dispatch" not in helper or "span" not in helper:
         print("FAIL helper content")
+        return 1
+    if "dsv4-patch-roster" not in helper or "CUDA graph capture hides" not in helper:
+        print("FAIL helper missing patch roster / capture warn")
         return 1
     print("ok  selftest")
     return 0
