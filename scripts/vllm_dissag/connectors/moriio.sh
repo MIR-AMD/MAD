@@ -829,10 +829,11 @@ connector_start_proxy() {
     # Always run, including NIAH. Chat QA on /v1/chat/completions — a bare
     # /v1/completions stem continues OpenAI JSON dumps (433991). NIAH stays
     # /v1/completions + product stem. Do not abort the bench if a reply
-    # fails. Full bodies + verdicts go to curl_*.log.
+    # fails. curl_*.log is a summary (first_chunk / chunks / assembled
+    # reply / verdict), not the per-token SSE — vLLM emits one event per
+    # token (~0.5 s/tok Flash PD; 434150 dumped ~200 JSON blobs/probe).
     # Serve registers MODEL_PATH (434017: DeepSeek-V4-Flash-FP8 404'd).
-    # stream=true so first tokens print without waiting for max_tokens=200
-    # (~0.57 s/tok Flash PD; a non-stream 200-tok curl sat ~2 min).
+    # stream=true so first tokens print without waiting for max_tokens=200.
     local _CURL_LOG="/run_logs/${SLURM_JOB_ID}/curl_${SLURM_JOB_ID}_xP${xP}_yD${yD}_${MODEL_NAME}.log"
     echo "===== smoke curl: 3 chat QA -> ${_CURL_LOG} ====="
     python3 - "$BENCHMARK_PORT" "$_CURL_LOG" "${MODEL_PATH}" <<'PY'
@@ -877,7 +878,8 @@ for tag, question, expect in probes:
         headers={"Content-Type": "application/json"},
     )
     text_parts = []
-    raw_parts = []
+    nchunks = 0
+    finish = None
     first_dt = None
     t0 = time.monotonic()
     try:
@@ -887,7 +889,6 @@ for tag, question, expect in probes:
                 if not line:
                     break
                 s = line.decode("utf-8", "replace")
-                raw_parts.append(s)
                 if first_dt is None and s.strip():
                     first_dt = time.monotonic() - t0
                     rec = f"[curl] first_chunk[{tag}] dt={first_dt:.2f}s"
@@ -902,6 +903,9 @@ for tag, question, expect in probes:
                     obj = json.loads(data)
                 except Exception:
                     continue
+                nchunks += 1
+                ch = (obj.get("choices") or [{}])[0]
+                finish = ch.get("finish_reason") or finish
                 piece = _delta_text(obj)
                 if piece:
                     text_parts.append(piece)
@@ -915,21 +919,20 @@ for tag, question, expect in probes:
         lines.append(rec)
         print(rec, flush=True)
         continue
-    raw = "".join(raw_parts)
-    lines.append(raw)
+    elapsed = time.monotonic() - t0
     text = "".join(text_parts).strip()
-    if not text:
-        try:
-            choice = json.loads(raw).get("choices", [{}])[0]
-            msg = choice.get("message") or {}
-            text = (msg.get("content") or choice.get("text") or "").strip()
-        except Exception:
-            text = ""
+    first_s = -1.0 if first_dt is None else first_dt
+    rec = (
+        f"[curl] stream[{tag}] chunks={nchunks} "
+        f"first={first_s:.2f}s wall={elapsed:.1f}s finish={finish}"
+    )
+    lines.append(rec)
+    print(rec, flush=True)
     answered = expect in text.lower() and len(text) >= 8
     verdict = "ANSWERED" if answered else "NO_ANSWER"
     if answered:
         n_ok += 1
-    rec = f"[curl] {verdict}[{tag}] expect={expect!r} reply={text[:240]!r}"
+    rec = f"[curl] {verdict}[{tag}] expect={expect!r} reply={text!r}"
     lines.append(rec)
     print(rec, flush=True)
 summary = f"[curl] summary {n_ok}/3 ANSWERED"
