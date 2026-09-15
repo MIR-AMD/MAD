@@ -132,7 +132,102 @@ _moriio_build_kv_transfer_config() {
     echo '{"kv_connector":"MoRIIOConnector","kv_role":"'"${kv_role}"'","kv_port":"'"${KV_PORT}"'","kv_connector_extra_config":{'"${extra}"'}}'
 }
 
+# v0290 DSV4 images do not bake vllm-router. Boot-install on NODE0 only, in
+# the background so cargo overlaps engine load. Wait in connector_start_proxy.
+# Git+cargo is the real binary (same as GLM Dockerfile). pip is a PyPI wrapper
+# that can lag main and is not the WideEP-validated path.
+_ROUTER_BOOT_PID=""
+_router_boot_log() {
+    echo "/run_logs/${SLURM_JOB_ID}/vllm_router_install_NODE${NODE_RANK}.log"
+}
+
+_kick_vllm_router_boot_install() {
+    [ "${NODE_RANK:-0}" = "0" ] || return 0
+    [ "${PROXY_TYPE:-}" = "vllm_router" ] || return 0
+    local method="${ROUTER_BOOT_INSTALL:-}"
+    [ -n "$method" ] && [ "$method" != "0" ] || return 0
+    [ "$method" = "1" ] && method=git
+    local log; log="$(_router_boot_log)"
+    mkdir -p "$(dirname "$log")"
+    echo "[router-boot] starting method=${method} repo=${ROUTER_REPO:-https://github.com/vllm-project/router.git} ref=${ROUTER_REF:-main}" | tee -a "$log"
+    _install_vllm_router_at_boot "$method" >>"$log" 2>&1 &
+    _ROUTER_BOOT_PID=$!
+    echo "[router-boot] pid=${_ROUTER_BOOT_PID} log=${log}"
+}
+
+_wait_vllm_router_boot_install() {
+    [ -n "${_ROUTER_BOOT_PID:-}" ] || return 0
+    echo "[router-boot] waiting for pid=${_ROUTER_BOOT_PID} (overlaps engine boot)"
+    if ! wait "${_ROUTER_BOOT_PID}"; then
+        echo "Error: vllm-router boot install failed. See $(_router_boot_log)" >&2
+        tail -n 80 "$(_router_boot_log)" >&2 || true
+        exit 1
+    fi
+    echo "[router-boot] install complete"
+}
+
+_install_vllm_router_at_boot() {
+    local method="$1"
+    local dest="/usr/local/bin/vllm-router"
+    case "$method" in
+        pip)
+            echo "[router-boot] pip install -U vllm-router"
+            pip install -U vllm-router
+            local pip_bin
+            pip_bin="$(command -v vllm-router 2>/dev/null || true)"
+            if [ -z "$pip_bin" ]; then
+                echo "Error: pip install vllm-router left no vllm-router on PATH" >&2
+                return 1
+            fi
+            if [ "$pip_bin" != "$dest" ]; then
+                install -m 755 "$pip_bin" "$dest"
+            fi
+            ;;
+        git)
+            local repo="${ROUTER_REPO:-https://github.com/vllm-project/router.git}"
+            local ref="${ROUTER_REF:-main}"
+            local rust="${RUST_TOOLCHAIN:-1.88.0}"
+            local src="/tmp/vllm-router-src"
+            echo "[router-boot] git ${repo} @ ${ref} (cargo release, rustc ${rust})"
+            if ! command -v git >/dev/null 2>&1 || ! command -v pkg-config >/dev/null 2>&1; then
+                apt-get update
+                apt-get install -y --no-install-recommends \
+                    git build-essential pkg-config libssl-dev curl ca-certificates
+            fi
+            if ! command -v cargo >/dev/null 2>&1; then
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                    | sh -s -- -y --default-toolchain "${rust}"
+            fi
+            # shellcheck disable=SC1091
+            [ -f /root/.cargo/env ] && . /root/.cargo/env
+            rustup default "${rust}" >/dev/null 2>&1 || rustup toolchain install "${rust}"
+            rm -rf "$src"
+            git clone --filter=blob:none "$repo" "$src"
+            git -C "$src" checkout "$ref"
+            local sha
+            sha="$(git -C "$src" rev-parse HEAD)"
+            echo "[router-boot] SHA=${sha}"
+            ( cd "$src" && cargo build --release )
+            install -m 755 "$src/target/release/vllm-router" "$dest"
+            echo "VLLM_ROUTER_BOOT=${repo}@${ref}@${sha}" >> /app/versions.txt
+            echo "[router-boot] installed ${dest} (${sha})"
+            ;;
+        *)
+            echo "Error: ROUTER_BOOT_INSTALL=${method} (expected git|pip|1)" >&2
+            return 1
+            ;;
+    esac
+    if ! "$dest" --help 2>&1 | grep -q moriio; then
+        echo "Error: ${dest} has no --kv-connector moriio (wrong package or too old)" >&2
+        "$dest" --help 2>&1 | head -n 40 >&2 || true
+        return 1
+    fi
+    export ROUTER_BINARY="$dest"
+}
+
 connector_runtime_patch() {
+    # Overlap cargo with engine boot (NODE0 / vllm_router only).
+    _kick_vllm_router_boot_install
     # GLM / DSV3 / dense: no-op (fixes are in-source on develop images).
     # DSV4 Flash/Pro on the v0.28.0 image needs the runtime patchers below.
     if [ "${MODEL_NAME:-}" != "DeepSeek-V4-Flash-FP8" ] && [ "${MODEL_NAME:-}" != "DeepSeek-V4-Pro-FP8" ]; then
@@ -707,30 +802,41 @@ connector_start_proxy() {
         parallelism_is_wide_ep || _router_dp_local=1
         echo "Starting vllm-router (MoRIIO): HTTP ${ROUTER_PORT}"
         echo "  prefill=${PREFILL_URL}  decode=${DECODE_URL}  dp_local=${_router_dp_local}"
+        _wait_vllm_router_boot_install
         [ -f /root/.cargo/env ] && source /root/.cargo/env
 
         local ROUTER_BIN="${ROUTER_BINARY:-$(command -v vllm-router 2>/dev/null || true)}"
+        [ -z "${ROUTER_BIN}" ] && [ -x /usr/local/bin/vllm-router ] && ROUTER_BIN=/usr/local/bin/vllm-router
         if [ -z "${ROUTER_BIN}" ] || [ ! -x "${ROUTER_BIN}" ]; then
-            echo "Error: vllm-router not found. Set ROUTER_BINARY=<path>, or PROXY_TYPE=moriio_toy to use the in-image toy proxy." \
+            echo "Error: vllm-router not found. Set ROUTER_BOOT_INSTALL=git (cargo from git), ROUTER_BINARY=<path>, or PROXY_TYPE=moriio_toy." \
                 | tee -a /run_logs/${SLURM_JOB_ID}/proxy_NODE${NODE_RANK}.log
             exit 1
         fi
         echo "Using vllm-router binary: ${ROUTER_BIN}"
         local _PROMETHEUS_PORT="${VLLM_ROUTER_PROMETHEUS_PORT:-29000}"
-        "${ROUTER_BIN}" \
-            --host 0.0.0.0 \
-            --port "${ROUTER_PORT}" \
-            --vllm-pd-disaggregation \
-            --kv-connector moriio \
-            --prefill "${PREFILL_URL}" \
-            --decode "${DECODE_URL}" \
-            --vllm-discovery-address "0.0.0.0:${PROXY_PING_PORT}" \
-            --intra-node-data-parallel-size "${_router_dp_local}" \
-            --policy round_robin \
-            --prefill-policy round_robin \
-            --decode-policy round_robin \
-            --log-level "${VLLM_ROUTER_LOG_LEVEL:-info}" \
-            --prometheus-port "${_PROMETHEUS_PORT}" \
+        local -a _router_args=(
+            --host 0.0.0.0
+            --port "${ROUTER_PORT}"
+            --vllm-pd-disaggregation
+            --kv-connector moriio
+            --prefill "${PREFILL_URL}"
+            --decode "${DECODE_URL}"
+            --vllm-discovery-address "0.0.0.0:${PROXY_PING_PORT}"
+            --intra-node-data-parallel-size "${_router_dp_local}"
+            --policy round_robin
+            --prefill-policy round_robin
+            --decode-policy round_robin
+            --log-level "${VLLM_ROUTER_LOG_LEVEL:-info}"
+            --prometheus-port "${_PROMETHEUS_PORT}"
+        )
+        # Ravi 2P2D KV-notify: --moriio-dp-size = prefill DP world. Latest
+        # upstream may have folded this into discovery; pass it only if present.
+        if [[ "${ROUTER_SKIP_MORIIO_DP_SIZE:-1}" != "1" ]] && \
+           "${ROUTER_BIN}" --help 2>&1 | grep -q -- '--moriio-dp-size'; then
+            _router_args+=(--moriio-dp-size "${PREFILL_DP_SIZE}")
+            echo "  --moriio-dp-size ${PREFILL_DP_SIZE}"
+        fi
+        "${ROUTER_BIN}" "${_router_args[@]}" \
             > >(tee /run_logs/${SLURM_JOB_ID}/vllm_router_NODE${NODE_RANK}.log >/dev/null) 2>&1 &
         proxy_pid=$!
         BENCHMARK_PORT=${ROUTER_PORT}

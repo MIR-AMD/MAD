@@ -21,6 +21,10 @@
   #   NIAH_WORDS=2000,8000,16000 NIAH_SEEDS=0,0,0 NIAH_LIST_PRIME='1.' \\
   #   NIAH_STOP='11.|```|<｜end▁of▁file｜>|<｜begin▁of▁file▁name｜>' NIAH_LOGPROBS=5 \\
   #   ./run_wideep_bench.sh niah dsv4fls 2p2d --image v0280 --time 06:00:00
+  # vllm-router (v0290 has no bake): git clone + cargo at NODE0 boot, not pip.
+  #   QOS=low PROXY_TYPE=vllm_router ROUTER_BOOT_INSTALL=git \\
+  #   NIAH_METHOD=product NIAH_MAXTOK=64 NIAH_SEEDS=0,0,0 NIAH_LIST_PRIME='1.' \\
+  #   ./run_wideep_bench.sh niah dsv4fls 2p2d --image v0290 --time 04:00:00 --after JOBID
 #
 # Changing EP16 → EP24/EP32 is TOPO only. Do not set xP/yD/-N/PROXY_ROUTE_DP by hand.
 #
@@ -304,8 +308,13 @@ else
 fi
 PROXY_MAX_CONCURRENCY="${PROXY_MAX_CONCURRENCY:-512}"
 # 220693 Python PR-176: omit --moriio-dp-size, ping 36367, cap 512.
-# ROUTER_SKIP_MORIIO_DP_SIZE=0 restores --moriio-dp-size ${PREFILL_DP_SIZE}.
-ROUTER_SKIP_MORIIO_DP_SIZE="${ROUTER_SKIP_MORIIO_DP_SIZE:-1}"
+# vllm_router 2P2D KV-notify wants --moriio-dp-size when the binary has it.
+# ROUTER_SKIP_MORIIO_DP_SIZE=1 omits the flag (toy-proxy default).
+if [[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]]; then
+    ROUTER_SKIP_MORIIO_DP_SIZE="${ROUTER_SKIP_MORIIO_DP_SIZE:-0}"
+else
+    ROUTER_SKIP_MORIIO_DP_SIZE="${ROUTER_SKIP_MORIIO_DP_SIZE:-1}"
+fi
 MORI_PROXY_PING_PORT="${MORI_PROXY_PING_PORT:-36367}"
 
 # --- IMAGE ---
@@ -568,6 +577,14 @@ fi
 # into docker -e; unset would keep the image ENV.
 if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
     EXTRA_ENV+=(SKIP_RUNTIME_PATCH="${SKIP_RUNTIME_PATCH:-0}")
+    # v0290/v0280 do not bake vllm-router. Git+cargo at NODE0 boot (GLM
+    # Dockerfile path). pip is ROUTER_BOOT_INSTALL=pip — not "latest main".
+    if [[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]]; then
+        EXTRA_ENV+=(ROUTER_BOOT_INSTALL="${ROUTER_BOOT_INSTALL:-git}")
+        EXTRA_ENV+=(ROUTER_REPO="${ROUTER_REPO:-https://github.com/vllm-project/router.git}")
+        EXTRA_ENV+=(ROUTER_REF="${ROUTER_REF:-main}")
+        EXTRA_ENV+=(RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.88.0}")
+    fi
 fi
 
 if [[ "$BENCH" == "mrcr" ]]; then
@@ -618,6 +635,7 @@ echo "=== WideEP bench plan ==="
 echo "BENCH=$BENCH  MODEL=$MODEL_NAME  TOPO=$TOPO  EP=$EP  xP=$xP yD=$yD  N=$N"
 echo "IMAGE=$DOCKER_IMAGE_NAME"
 echo "PROXY_TYPE=${PROXY_TYPE:-moriio_toy}  PROXY_ROUTE_DP=$PROXY_ROUTE_DP  SKIP_MORIIO_DP=${ROUTER_SKIP_MORIIO_DP_SIZE}  PING=${MORI_PROXY_PING_PORT}  CONC=${PROXY_MAX_CONCURRENCY}  WIDE_EP=1"
+[[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]] && echo "ROUTER_BOOT=${ROUTER_BOOT_INSTALL:-}  REPO=${ROUTER_REPO:-}  REF=${ROUTER_REF:-}"
 echo "TIME=$TIME_ARG"
 [[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"
 [[ "$BENCH" == "niah" || "$BENCH" == "validate" ]] && echo "NIAH_METHOD=${NIAH_METHOD:-}  NIAH_WORDS=$NIAH_WORDS  NIAH_SEEDS=$NIAH_SEEDS  HALT=$NIAH_HALT_ON_FAIL  MAXTOK=${NIAH_MAXTOK:-}  WARMUP=${NIAH_WARMUP:-}  TIMEOUT=${NIAH_TIMEOUT:-}  WRAP=0  TERSE=${NIAH_TERSE:-0}  STOP_BLANK=${NIAH_STOP_BLANK:-0}  MINTOK=${NIAH_MIN_TOKENS:-0}  PRIME=${NIAH_LIST_PRIME:-}  STOP=${NIAH_STOP:-}  LOGPROBS=${NIAH_LOGPROBS:-0}"
@@ -665,6 +683,10 @@ export PROXY_MAX_CONCURRENCY="${PROXY_MAX_CONCURRENCY:-512}"
 export MORIIO_CHILD_HTTP="${MORIIO_CHILD_HTTP:-0}"
 export PROXY_HANDSHAKE_PER_POD="${PROXY_HANDSHAKE_PER_POD:-}"
 export ROUTER_SKIP_MORIIO_DP_SIZE
+[[ -n "${ROUTER_BOOT_INSTALL:-}" ]] && export ROUTER_BOOT_INSTALL
+[[ -n "${ROUTER_REPO:-}" ]] && export ROUTER_REPO
+[[ -n "${ROUTER_REF:-}" ]] && export ROUTER_REF
+[[ -n "${RUST_TOOLCHAIN:-}" ]] && export RUST_TOOLCHAIN
 # 220693: 36367. 25000 dodges the ephemeral-port steal (218125/218144) if ping fails.
 export MORI_PROXY_PING_PORT
 if [[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]]; then
