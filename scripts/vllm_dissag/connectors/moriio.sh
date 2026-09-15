@@ -829,110 +829,58 @@ connector_start_proxy() {
     # Always run, including NIAH. Chat QA on /v1/chat/completions — a bare
     # /v1/completions stem continues OpenAI JSON dumps (433991). NIAH stays
     # /v1/completions + product stem. Do not abort the bench if a reply
-    # fails. curl_*.log is a summary (first_chunk / chunks / assembled
-    # reply / verdict), not the per-token SSE — vLLM emits one event per
-    # token (~0.5 s/tok Flash PD; 434150 dumped ~200 JSON blobs/probe).
+    # fails. Non-stream smoke: one JSON body per probe, verdict + reply in
+    # curl_*.log (434150 stream=true dumped ~200 SSE blobs/probe).
     # Serve registers MODEL_PATH (434017: DeepSeek-V4-Flash-FP8 404'd).
-    # stream=true so first tokens print without waiting for max_tokens=200.
     local _CURL_LOG="/run_logs/${SLURM_JOB_ID}/curl_${SLURM_JOB_ID}_xP${xP}_yD${yD}_${MODEL_NAME}.log"
     echo "===== smoke curl: 3 chat QA -> ${_CURL_LOG} ====="
     python3 - "$BENCHMARK_PORT" "$_CURL_LOG" "${MODEL_PATH}" <<'PY'
-import json, sys, time, urllib.error, urllib.request
+import json, sys, time, urllib.request
 port, log_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
 url = f"http://127.0.0.1:{port}/v1/chat/completions"
-# (tag, user question, substring the answer must contain)
 probes = (
     ("amd", "Who is the CEO of AMD? Answer in one sentence.", "lisa"),
     ("france", "What is the capital of France? Answer in one sentence.", "paris"),
     ("uk", "What is the capital of the United Kingdom? Answer in one sentence.", "london"),
 )
 n_ok = 0
-lines = [f"===== smoke curl: 3 chat QA stream port={port} model={model} ====="]
-
-
-def _delta_text(obj):
-    ch = (obj.get("choices") or [{}])[0]
-    delta = ch.get("delta") or {}
-    msg = ch.get("message") or {}
-    return delta.get("content") or msg.get("content") or ch.get("text") or ""
-
-
+lines = [f"===== smoke curl: 3 chat QA port={port} model={model} ====="]
 for tag, question, expect in probes:
     payload = {
         "model": model,
         "temperature": 0,
         "max_tokens": 200,
         "top_k": 1,
-        "stream": True,
         "messages": [{"role": "user", "content": question}],
     }
     lines.append(f"===== curl[{tag}] =====")
-    lines.append(
-        "curl -N http://127.0.0.1:%s/v1/chat/completions \\\n"
-        "  -H \"Content-Type: application/json\" \\\n"
-        "  -d '%s'" % (port, json.dumps(payload, indent=2))
-    )
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    text_parts = []
-    nchunks = 0
-    finish = None
-    first_dt = None
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            while True:
-                line = resp.readline()
-                if not line:
-                    break
-                s = line.decode("utf-8", "replace")
-                if first_dt is None and s.strip():
-                    first_dt = time.monotonic() - t0
-                    rec = f"[curl] first_chunk[{tag}] dt={first_dt:.2f}s"
-                    lines.append(rec)
-                    print(rec, flush=True)
-                if not s.startswith("data:"):
-                    continue
-                data = s[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except Exception:
-                    continue
-                nchunks += 1
-                ch = (obj.get("choices") or [{}])[0]
-                finish = ch.get("finish_reason") or finish
-                piece = _delta_text(obj)
-                if piece:
-                    text_parts.append(piece)
-                    sys.stdout.write(piece)
-                    sys.stdout.flush()
-        if text_parts:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+        with urllib.request.urlopen(req, timeout=240) as resp:
+            obj = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception as exc:
         rec = f"[curl] FAIL[{tag}] {exc}"
         lines.append(rec)
         print(rec, flush=True)
         continue
     elapsed = time.monotonic() - t0
-    text = "".join(text_parts).strip()
-    first_s = -1.0 if first_dt is None else first_dt
-    rec = (
-        f"[curl] stream[{tag}] chunks={nchunks} "
-        f"first={first_s:.2f}s wall={elapsed:.1f}s finish={finish}"
-    )
+    ch = (obj.get("choices") or [{}])[0]
+    msg = ch.get("message") or {}
+    text = (msg.get("content") or ch.get("text") or "").strip()
+    finish = ch.get("finish_reason")
+    rec = f"[curl] [{tag}] wall={elapsed:.1f}s finish={finish} chars={len(text)}"
     lines.append(rec)
     print(rec, flush=True)
     answered = expect in text.lower() and len(text) >= 8
     verdict = "ANSWERED" if answered else "NO_ANSWER"
     if answered:
         n_ok += 1
-    rec = f"[curl] {verdict}[{tag}] expect={expect!r} reply={text!r}"
+    rec = f"[curl] {verdict}[{tag}] expect={expect!r} reply={text[:400]!r}"
     lines.append(rec)
     print(rec, flush=True)
 summary = f"[curl] summary {n_ok}/3 ANSWERED"
