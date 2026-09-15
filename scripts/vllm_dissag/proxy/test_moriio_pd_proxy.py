@@ -133,6 +133,12 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(instance_for_rank(pods, 0, 8)["http_address"], "10.0.0.0:20005")
         self.assertEqual(instance_for_rank(pods, 8, 8)["http_address"], "10.0.0.1:20005")
 
+    def test_masters_only_cli_rank_stays_on_http_master(self):
+        master = [{"http_address": "10.0.0.0:20005"}]
+        self.assertEqual(instance_for_rank(master, 0, 8)["http_address"], "10.0.0.0:20005")
+        self.assertEqual(instance_for_rank(master, 8, 8)["http_address"], "10.0.0.0:20005")
+        self.assertEqual(instance_for_rank(master, 15, 8)["http_address"], "10.0.0.0:20005")
+
     def test_http_goes_to_zmq_master_not_headless_child(self):
         pods = [
             {
@@ -144,6 +150,16 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(http_master(pods)["http_address"], "10.0.0.0:20005")
         self.assertEqual(instance_for_rank(pods, 8, 8)["http_address"], "10.0.0.1:20005")
         # Headless child has no ZMQ → still POST to the master (216966).
+        self.assertEqual(http_backend(pods, 8, 8)["http_address"], "10.0.0.0:20005")
+
+    def test_http_backend_masters_only_cli_posts_master(self):
+        pods = [
+            {
+                "http_address": "10.0.0.0:20005",
+                "zmq_address": "host:10.0.0.0,handshake:8405,notify:61005",
+            }
+        ]
+        self.assertEqual(http_backend(pods, 0, 8)["http_address"], "10.0.0.0:20005")
         self.assertEqual(http_backend(pods, 8, 8)["http_address"], "10.0.0.0:20005")
 
     def test_http_backend_posts_to_child_when_child_has_zmq(self):
@@ -208,6 +224,7 @@ class RouteTests(unittest.TestCase):
         p0["zmq_address"] = "host:10.0.0.0,handshake:8405,notify:61005"
         self.assertTrue(zmq_ready([p0, p1], 2))
         self.assertFalse(zmq_ready([p0], 2))
+        self.assertTrue(zmq_ready([p0], 1))
 
     def test_zmq_ready_child_http_waits_for_every_pod(self):
         p0 = seed_instance("http://10.0.0.0:20005", "P", 16)
@@ -255,6 +272,34 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(params["remote_dp_size_local"], 8)
         # Handshake :8405 is on the master; repeat that host per pod slot.
         self.assertEqual(params["remote_hosts"], ["10.0.0.2", "10.0.0.2"])
+
+    def test_kv_params_pad_hosts_when_cli_is_master_only(self):
+        remotes = [
+            {
+                "http_address": "10.0.0.2:20005",
+                "zmq_address": "host:10.0.0.2,handshake:8405,notify:61005",
+            }
+        ]
+        params = build_kv_transfer_params(
+            role="decode",
+            transfer_id="tx-1",
+            remote_instances=remotes,
+            remote_dp_size=16,
+            remote_dp_size_local=8,
+            remote_dp_rank=0,
+            remote_tp_size=1,
+        )
+        self.assertEqual(params["remote_hosts"], ["10.0.0.2", "10.0.0.2"])
+        params32 = build_kv_transfer_params(
+            role="decode",
+            transfer_id="tx-2",
+            remote_instances=remotes,
+            remote_dp_size=32,
+            remote_dp_size_local=8,
+            remote_dp_rank=0,
+            remote_tp_size=1,
+        )
+        self.assertEqual(params32["remote_hosts"], ["10.0.0.2"] * 4)
 
 
 class LoggingTests(unittest.TestCase):

@@ -22,8 +22,10 @@ Launch (from `connector_start_proxy`): `--moriio-dp-size` = **prefill** DP
 world is `min(P, D)` — 4P/2D pins ranks **0–15** only. Passing prefill `32`
 with 2 decode pods was jobs **216534** / **216576** (18 `PARSE_ERROR` on
 decode ranks 16–31). 4P/4D stays 32. `--dp-size-local` = 8,
-`--expect-prefill ${xP}` `--expect-decode ${yD}`, `--prefill/--decode` once
-per **pod** (CLI order = pod index). HTTP `:10001`, ZMQ discovery `:36367`
+`--expect-prefill 1` `--expect-decode 1`, `--prefill/--decode` once per
+**HTTP master** (same as vllm-router). Headless children never bind `:20005`.
+`MORIIO_CHILD_HTTP=1` is the only path that still seeds every pod and
+`--expect-* ${xP}/${yD}`. HTTP `:10001`, ZMQ discovery `:36367`
 (`--use-discovery`, always on). Rank pin stays `PROXY_ROUTE_DP`. This is **not**
 Ravi `concurrent prefill`. `PYTHONUNBUFFERED=1` (headless `tee` otherwise looks frozen for 10+ min).
 `PYTHONPATH` includes this directory so `--middleware moriio_http_debug.log_http`
@@ -33,15 +35,16 @@ imports.
 
 WideEP children are `--headless`. They never bind `:20005` and never ZMQ-register.
 One HTTP frontend per DP group (prefill master, decode master). Handshake `:8405`
-and notify stay on that master. Child CLI IPs are topology only.
+and notify stay on that master. The launcher does **not** pass child `:20005`
+URLs (they never received HTTP). `MORIIO_CHILD_HTTP=1` still lists every pod.
 
 `remote_hosts` **repeats the HTTP-master IP** once per pod slot so
 `rank // dp_local` still indexes the list, but WRITE never dials a headless
 `:8405` (job **216121** hung on a child). Rank 8+ is `X-data-parallel-rank` on
 the master API; the engine DP-RPCs to the child.
 
-`/ready` is 200 when **each HTTP master** has ZMQ'd and CLI pod URLs are seeded.
-It does **not** wait for child ZMQ (job **216057** blocked forever on P=2 D=2).
+`/ready` is 200 when **each HTTP master** has ZMQ'd. It does **not** wait for
+child ZMQ (job **216057** blocked forever on P=2 D=2).
 Engine-ready (weight load + graph capture) is a **separate** gate in
 `connector_wait_workers_ready` — not MoRI listen on children.
 
@@ -63,14 +66,14 @@ Raw `/v1/chat/completions` without those fields `KeyError('remote_host')` on dec
 
 ## State machine
 
-Child URLs are present from CLI seed onward. They never change the ready bit.
+Master URLs are present from CLI seed onward. Child IPs are not on argv.
 Only the first ZMQ `P` and first ZMQ `D` (HTTP masters) move the machine.
 Later identical payloads are `unchanged` (heartbeats). There is no separate
 “Serving” state in code — POSTs run while Ready.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Seeded: CLI seed prefill and decode URLs
+  [*] --> Seeded: CLI seed HTTP master URLs
   Seeded --> WaitZmq: bind HTTP 10001 and ZMQ 36367
   WaitZmq --> WaitZmq: HELLO or heartbeat
   WaitZmq --> PrefillOnly: first ZMQ P from HTTP master
@@ -184,7 +187,7 @@ out because decode never logged the HTTP POST.
 | `X-data-parallel-rank` + `remote_dp_rank_override` | yes | yes | yes |
 | ZMQ discovery | 1P + 1D HTTP masters | same | same |
 | `remote_hosts` (master IP × pod slots) | 2 + 2 | 4 + 2 | 4 + 4 |
-| Prefill CLI URLs / decode CLI URLs | 2 / 2 | 4 / 2 | 4 / 4 |
+| Prefill CLI URLs / decode CLI URLs | 1 / 1 | 1 / 1 | 1 / 1 |
 | Concurrency | 1–512 (queue, do not RST) | same | same |
 
 ### 2P/2D rank map (EP=16, local=8)

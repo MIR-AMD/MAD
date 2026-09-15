@@ -16,7 +16,8 @@ Ravi contract (see UPSTREAM_ROUTER_ANALYSIS.md):
   * advertise ``remote_hosts`` / ``remote_dp_size_local`` for multi-pod WRITE
   * POST HTTP to the (non-headless) P/D masters; rank 8+ is X-data-parallel-rank
   * handshake/notify ZMQ and remote_hosts stay on the HTTP master (children do
-    not bind :8405 — 213116). Child CLI URLs are topology only.
+    not bind :8405 — 213116). Default CLI is one master URL per role (same as
+    vllm-router). ``MORIIO_CHILD_HTTP=1`` still seeds every pod.
   * /ready when each role's HTTP master has ZMQ'd (headless children never register)
   * client ``stream=true``: OpenAI SSE to the client (``data:`` + ``[DONE]``).
     This image's PD decode often returns one JSON object even when stream is
@@ -363,16 +364,24 @@ def pod_index(global_dp_rank: int, dp_size_local: int) -> int:
 def instance_for_rank(
     instances: list[dict[str, Any]], global_rank: int, dp_size_local: int
 ) -> dict[str, Any]:
-    """Pod row for a global rank (CLI order). HTTP still goes to http_master()."""
+    """Pod row for a global rank (CLI order). HTTP still goes to http_master().
+
+    One CLI URL is the HTTP master for the whole DP group (headless children).
+    Rank 8+ then stays on that row; ``X-data-parallel-rank`` reaches the child.
+    Two or more URLs still mean real pods — overflow is a missing decode pod
+    (216534 4P/2D rank 16).
+    """
     if not instances:
         raise LookupError("no instances registered")
     idx = pod_index(global_rank, dp_size_local)
-    if idx >= len(instances):
-        raise LookupError(
-            f"global rank {global_rank} maps to pod {idx} but only "
-            f"{len(instances)} instance(s) registered (dp_size_local={dp_size_local})"
-        )
-    return instances[idx]
+    if idx < len(instances):
+        return instances[idx]
+    if len(instances) == 1:
+        return instances[0]
+    raise LookupError(
+        f"global rank {global_rank} maps to pod {idx} but only "
+        f"{len(instances)} instance(s) registered (dp_size_local={dp_size_local})"
+    )
 
 
 def http_master(instances: list[dict[str, Any]]) -> dict[str, Any]:
@@ -500,6 +509,23 @@ def _handshake_hosts(instances: list[dict[str, Any]]) -> list[str]:
     return [master] * len(instances)
 
 
+def _pad_remote_hosts(
+    hosts: list[str], remote_dp_size: int, remote_dp_size_local: int
+) -> list[str]:
+    """One host slot per remote pod so ``rank // dp_local`` indexes the list.
+
+    Masters-only CLI seeds one URL. WRITE still needs ``ceil(dp / local)``
+    slots (216121): repeat the HTTP-master IP, never a headless child.
+    """
+    if not hosts:
+        return hosts
+    local = max(int(remote_dp_size_local), 1)
+    n_pods = max(len(hosts), (int(remote_dp_size) + local - 1) // local)
+    if len(hosts) >= n_pods:
+        return hosts
+    return hosts + [hosts[0]] * (n_pods - len(hosts))
+
+
 def build_kv_transfer_params(
     *,
     role: str,
@@ -533,7 +559,11 @@ def build_kv_transfer_params(
             "remote_tp_size": int(remote_tp_size),
             "remote_dp_rank": int(remote_dp_rank),
             "remote_dp_rank_override": True,
-            "remote_hosts": _handshake_hosts(remote_instances),
+            "remote_hosts": _pad_remote_hosts(
+                _handshake_hosts(remote_instances),
+                remote_dp_size,
+                remote_dp_size_local,
+            ),
         }
     )
     return params
@@ -577,10 +607,10 @@ def upsert_registration(
 
 
 def zmq_ready(instances: list[dict[str, Any]], expected: int) -> bool:
-    """HTTP master has ZMQ'd; CLI-seeded pod count is present for remote_hosts.
+    """HTTP master has ZMQ'd. Default CLI is one master URL per role.
 
-    Headless children never ZMQ-register. Requiring zmq on every seeded URL
-    (expect P=2 D=2) blocks /ready forever on 2P/2D and 4P/4D.
+    Headless children never ZMQ-register. Requiring zmq on every former
+    child URL (expect P=2 D=2) blocked /ready forever on 2P/2D and 4P/4D.
 
     ``MORIIO_CHILD_HTTP=1`` children *do* register (they own MoRIIO). Ready
     then waits for every seeded pod so rank 8+ is not POSTed to a child
@@ -1602,13 +1632,15 @@ def parse_args(argv: list[str] | None = None) -> ProxyConfig:
         "--prefill",
         action="append",
         default=[],
-        help="Prefill pod HTTP URL. Repeat once per pod, CLI order = pod index.",
+        help="Prefill HTTP URL. Default: HTTP master only. Repeat per pod "
+        "only with MORIIO_CHILD_HTTP=1 (CLI order = pod index).",
     )
     p.add_argument(
         "--decode",
         action="append",
         default=[],
-        help="Decode pod HTTP URL. Repeat once per pod, CLI order = pod index.",
+        help="Decode HTTP URL. Default: HTTP master only. Repeat per pod "
+        "only with MORIIO_CHILD_HTTP=1 (CLI order = pod index).",
     )
     p.add_argument(
         "--log-level",
