@@ -151,10 +151,9 @@ connector_runtime_patch() {
         echo "[aiter-scrub] removing stale AITER JIT cache (${AITER_JIT_DIR:-/tmp/vllm_cache/aiter_jit})"
         rm -rf "${AITER_JIT_DIR:-/tmp/vllm_cache/aiter_jit}"/* 2>/dev/null || true
     fi
+    # Wei combine() original topk is a vLLM mori.py bug, not MoRI. v0.29.0
+    # 98dff2a still passes dispatched topk_ids into combine() — keep this.
     _mori_combine_original_topk_fix
-    if [ "${VLLM_PD_DEBUG:-1}" = "1" ]; then
-        _moriio_pd_debug_patch
-    fi
     _dsv4_moriio_attn_backend_fix
     _dsv4_skip_indexer_register
     _dsv4_skip_noncontiguous_register
@@ -163,12 +162,6 @@ connector_runtime_patch() {
     _dsv4_supports_hma_fix
     _dsv4_hma_upstream_geom_fix
     _dsv4_region_len_span_fix
-    _dsv4_backend_detect_fix
-    _dsv4_defer_diag_fix
-    _dsv4_rid_map_diag_fix
-    _dsv4_write_diag_fix
-    _dsv4_decode_diag_fix
-    _dsv4_kv_hash_fix
     _dsv4_attn_transfer_fix
     _dsv4_chunked_prefill_hma_fix
     _dsv4_rdma_wait_fix
@@ -192,23 +185,6 @@ _mori_combine_original_topk_fix() {
         echo "Error: [mori-combine] patch failed — EP32 would emit garbage. Aborting." >&2
         exit 1
     }
-}
-
-_moriio_pd_debug_patch() {
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_pd_debug.py"
-    if [ ! -f "${_py}" ]; then
-        echo "[pd-debug] ${_py} missing; skipping connector logs."
-        return 0
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "[pd-debug] cannot locate vLLM dir; skipping connector logs."
-        return 0
-    fi
-    echo "[pd-debug] applying ${_py} against ${_vllm_dir}"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || echo "[pd-debug] connector patch failed (non-fatal)."
 }
 
 # DSV4 Flash: MoRIIO generic MLA selector rejects fp8_ds_mla (217457/217460).
@@ -357,177 +333,6 @@ _dsv4_region_len_span_fix() {
     }
 }
 
-# DSV4: diagnostics for the 218282 hang. _is_remote_ready(task) is only
-# "task.transfer_id in worker.moriio_wrapper.done_remote_allocate_req_dict", so a
-# deferred write means D never told P its block allocation for that transfer id;
-# at defer_timeout (60s default) P force-frees the blocks and D waits on KV that
-# never comes. Log the awaited id beside the keys the dict does hold: empty is a
-# lost notify, other-keys-present is a keying mismatch, late arrival shows as a
-# large waited= on "ready". Diagnostic only. DSV4_DEFER_DIAG (default 0).
-_dsv4_defer_diag_fix() {
-    if [ "${DSV4_DEFER_DIAG:-0}" != "1" ]; then
-        echo "[dsv4-defer] DSV4_DEFER_DIAG=${DSV4_DEFER_DIAG:-0}: keeping the shipped defer logging"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_defer_diag_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-defer] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-defer] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-defer] applying ${_py} against ${_vllm_dir} (DSV4_DEFER_DIAG=1)"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-defer] patch failed — the hang would go unlogged. Aborting." >&2
-        exit 1
-    }
-}
-
-# 218318 HMA=1 logged 10 "unmap MISS ... table_size=0" — one per reap — while
-# 218323 HMA=0 logged none, so the producer rid<->transfer_id table is empty
-# only with HMA on and no ACK can be attributed. map_request_id sits after the
-# "if not params: return" guard in update_state_after_alloc, so this traces map
-# and unmap with the instance identity (dp/gdp/self) to separate an empty
-# kv_transfer_params from a map and unmap landing on different schedulers.
-# Diagnostic only. DSV4_RID_MAP_DIAG (default 0).
-_dsv4_rid_map_diag_fix() {
-    if [ "${DSV4_RID_MAP_DIAG:-0}" != "1" ]; then
-        echo "[dsv4-ridmap] DSV4_RID_MAP_DIAG=${DSV4_RID_MAP_DIAG:-0}: keeping the shipped map/unmap logging"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_rid_map_diag_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-ridmap] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-ridmap] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-ridmap] applying ${_py} against ${_vllm_dir} (DSV4_RID_MAP_DIAG=1)"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-ridmap] patch failed — the empty table would go unexplained. Aborting." >&2
-        exit 1
-    }
-}
-
-# 218417: offsets-cache group collision (now keyed) + pending-save merge +
-# per-request write-pair logs. Always apply: the group-key and merge are
-# behavioural. DSV4_WRITE_DIAG (default 1) only gates the extra logs.
-_dsv4_write_diag_fix() {
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_write_diag_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-write-diag] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-write-diag] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-write-diag] applying ${_py} against ${_vllm_dir} (DSV4_WRITE_DIAG=${DSV4_WRITE_DIAG:-1})"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-write-diag] patch failed — SWA twins would share dests. Aborting." >&2
-        exit 1
-    }
-}
-
-# 220985: WRITE sealed 243/243, decode LENGTH_CAPPED 63 tok, NIAH chars=0.
-# Log consumer per-group dests on both update_state_after_alloc maps, and
-# sampled token ids / detok skip=False vs True. Diagnostic only.
-# DSV4_DECODE_DIAG (default 0) only gates the extra logs.
-_dsv4_decode_diag_fix() {
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_decode_diag_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-decode] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-decode] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-decode] applying ${_py} against ${_vllm_dir} (DSV4_DECODE_DIAG=${DSV4_DECODE_DIAG:-0})"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-decode] patch failed — 2k chars=0 would stay untyped. Aborting." >&2
-        exit 1
-    }
-}
-
-# 221697: WRITE sealed, decode sampled 63x BOS. Hash group-0 / SWA / indexer
-# pages on prefill src vs decode dest, and log sparse-MLA metadata_key /
-# paged_kv_indices zero_frac. 223342: also probe runner block_table each
-# execute_model (DSV4-KV-RUNNER-BT). Diagnostic only. DSV4_KV_HASH (default 0).
-# Dual-anchor: v0.28 return compute_block_transfer_offsets; v0.29 unpacks
-# local, remote, sizes then adds kv_layer_mr_offset (419148 miss).
-# Graph-vs-compress is DSV4_EAGER=1 (decode cudagraph NONE), not this patcher.
-# 223417: graph is out. runner-bt g0slot= logs group-0 dim[1]*ratio coverage.
-_dsv4_kv_hash_fix() {
-    if [ "${DSV4_KV_HASH:-0}" != "1" ]; then
-        echo "[dsv4-kv] skipped DSV4_KV_HASH=${DSV4_KV_HASH:-0}"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_kv_hash_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-kv] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-kv] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-kv] applying ${_py} against ${_vllm_dir} (DSV4_KV_HASH=${DSV4_KV_HASH:-0})"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-kv] patch failed — 221697 BOS vs empty group-0 would stay unsplit. Aborting." >&2
-        exit 1
-    }
-}
-
-# DSV4: vllm#48989's other code hunk. The shipped connector sets backend_name
-# from one get_attn_backend() call in __init__, which cannot describe DSV4's
-# hybrid set (group-0 MLAAttentionSpec + groups 1-4 SlidingWindowMLASpec +
-# .indexer.k_cache). Upstream asks get_current_attn_backends() at register time
-# instead. Additive: logs the list beside the shipped value so we can see
-# whether the single query was ever wrong. DSV4_BACKEND_DETECT (default 0).
-_dsv4_backend_detect_fix() {
-    if [ "${DSV4_BACKEND_DETECT:-0}" != "1" ]; then
-        echo "[dsv4-backend] DSV4_BACKEND_DETECT=${DSV4_BACKEND_DETECT:-0}: keeping the shipped __init__ get_attn_backend query"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_backend_detect_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-backend] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-backend] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-backend] applying ${_py} against ${_vllm_dir} (DSV4_BACKEND_DETECT=1)"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-backend] patch failed — backend_name would stay the single __init__ query. Aborting." >&2
-        exit 1
-    }
-}
-
 # DSV4 Flash: KV views are non-contiguous (217514). 217532 skip-all left 0
 # caches (StopIteration). Register a data_ptr-aligned storage span; no .contiguous().
 # Dual-anchor: v0.28 per-layer register_local_tensor(kv_cache); v0.29 also
@@ -631,8 +436,7 @@ _dsv4_attn_transfer_fix() {
 
 # 218328 20-token cliff: last-chunk used len(groups)*smallest_page. 218687
 # reproduced it with the patcher retired (curl 17 tok wrote, 2k never did).
-# 218417 still hung after writes sealed — that is the write-diag group-key,
-# not a reason to skip this patcher. Apply under HMA=1; env default 1.
+# Apply under HMA=1; env default 1.
 _dsv4_chunked_prefill_hma_fix() {
     if [ "${DSV4_ENABLE_HMA:-1}" = "0" ]; then
         echo "[dsv4-chunk-hma] skipped: DSV4_ENABLE_HMA=0 (block ids are flat)"
@@ -1027,10 +831,13 @@ connector_start_proxy() {
     # JSON junk (`"label": "0"`) — too short to tell English from garbage.
     # Three TYPE-1 prompts, 64 tok, verdict=COHERENT only if the needle is in
     # the completion. Do not abort the bench on GARBAGE (NIAH still runs).
-    echo "===== smoke curl: 3 prompts (English vs garbage) ====="
-    python3 - "$BENCHMARK_PORT" <<'PY'
+    # Full bodies + verdicts go to curl_*.log (same dir as niah_/benchmark_).
+    # pd_vllm_bench only gets the path + summary — do not dump JSON there.
+    local _CURL_LOG="/run_logs/${SLURM_JOB_ID}/curl_${SLURM_JOB_ID}_xP${xP}_yD${yD}_${MODEL_NAME}.log"
+    echo "===== smoke curl: 3 prompts -> ${_CURL_LOG} ====="
+    python3 - "$BENCHMARK_PORT" "$_CURL_LOG" <<'PY'
 import json, sys, urllib.error, urllib.request
-port = sys.argv[1]
+port, log_path = sys.argv[1], sys.argv[2]
 url = f"http://127.0.0.1:{port}/v1/completions"
 probes = (
     ("amd", "Who is AMD CEO?", "lisa"),
@@ -1038,8 +845,9 @@ probes = (
     ("uk", "What is the capital of the United Kingdom?", "london"),
 )
 n_ok = 0
+lines = [f"===== smoke curl: 3 prompts port={port} ====="]
 for tag, prompt, needle in probes:
-    print(f"===== curl[{tag}] {prompt!r} =====", flush=True)
+    lines.append(f"===== curl[{tag}] {prompt!r} =====")
     body = json.dumps(
         {"prompt": prompt, "temperature": 0, "max_tokens": 64, "top_k": 1}
     ).encode()
@@ -1050,9 +858,11 @@ for tag, prompt, needle in probes:
         with urllib.request.urlopen(req, timeout=180) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except Exception as exc:
-        print(f"[curl] FAIL[{tag}] {exc}", flush=True)
+        rec = f"[curl] FAIL[{tag}] {exc}"
+        lines.append(rec)
+        print(rec, flush=True)
         continue
-    print(raw, flush=True)
+    lines.append(raw)
     try:
         text = json.loads(raw).get("choices", [{}])[0].get("text") or ""
     except Exception:
@@ -1064,12 +874,18 @@ for tag, prompt, needle in probes:
     verdict = "GARBAGE" if garbage else "COHERENT"
     if verdict == "COHERENT":
         n_ok += 1
-    print(
+    rec = (
         f"[curl] {verdict}[{tag}] needle={needle!r} letters={letters} "
-        f"text={text[:240]!r}",
-        flush=True,
+        f"text={text[:240]!r}"
     )
-print(f"[curl] summary {n_ok}/3 COHERENT", flush=True)
+    lines.append(rec)
+    print(rec, flush=True)
+summary = f"[curl] summary {n_ok}/3 COHERENT"
+lines.append(summary)
+print(summary, flush=True)
+with open(log_path, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines) + "\n")
+print(f"[curl] log={log_path}", flush=True)
 PY
     sleep 20
 }

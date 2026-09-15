@@ -407,17 +407,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
     # vllm#48989 non-contiguous MR: N*stride[0]*es vs tight view bbox.
     # Default 0 keeps 217546/218443. HMA=1 GEOM=1 full-block copies want 1.
     EXTRA_ENV+=(DSV4_STORAGE_UPSTREAM_SPAN="${DSV4_STORAGE_UPSTREAM_SPAN:-0}")
-    # vllm#48989's other hunk: backend list at register time instead of one
-    # get_attn_backend() in __init__. Additive/logging. Default 0.
-    EXTRA_ENV+=(DSV4_BACKEND_DETECT="${DSV4_BACKEND_DETECT:-1}")
-    # 218282 hang instrumentation. DIAG logs why a write deferred and what
-    # done_remote_allocate_req_dict held; PROBE walks rank x streaming to
-    # separate the two causes that job confounded. Both diagnostic, default 0.
-    EXTRA_ENV+=(DSV4_DEFER_DIAG="${DSV4_DEFER_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_RID_MAP_DIAG="${DSV4_RID_MAP_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_WRITE_DIAG="${DSV4_WRITE_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_DECODE_DIAG="${DSV4_DECODE_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_KV_HASH="${DSV4_KV_HASH:-1}")
     # 223392: yaml decode is FULL_DECODE_ONLY. DSV4_EAGER=1 splits CUDA-graph
     # capture vs compress_ratio: DECODE_CUDAGRAPH_MODE=NONE with +quant_fp8.
     # NEVER --enforce-eager (AITER aiter_tensor_t crash). Submit-time wins yaml.
@@ -440,7 +429,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
     EXTRA_ENV+=(DSV4_DP_PROBE="${DSV4_DP_PROBE:-0}")
     EXTRA_ENV+=(VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-DEBUG}")
     EXTRA_ENV+=(PROXY_LOG_LEVEL="${PROXY_LOG_LEVEL:-DEBUG}")
-    EXTRA_ENV+=(VLLM_PD_DEBUG="${VLLM_PD_DEBUG:-1}")
     EXTRA_ENV+=(CURL_SUITE=short)
     # 36367 is in ip_local_port_range; a DP worker can steal it (218629).
     EXTRA_ENV+=(MORI_PROXY_PING_PORT="${MORI_PROXY_PING_PORT:-36367}")
@@ -468,7 +456,12 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
         fi
         NIAH_WARMUP=0
         NIAH_TIMEOUT="${NIAH_TIMEOUT:-1800}"
-        NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-1}"
+        # validate must finish the ladder so smoke still has a full NIAH log.
+        if [[ "$BENCH" == "validate" ]]; then
+            NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-0}"
+        else
+            NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-1}"
+        fi
         EXTRA_ENV+=(NIAH_METHOD="$NIAH_METHOD")
         EXTRA_ENV+=(NIAH_DS_WRAP=0)
         EXTRA_ENV+=(NIAH_TERSE="${NIAH_TERSE:-0}")
@@ -509,12 +502,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
     # vllm#48989 non-contiguous MR: N*stride[0]*es vs tight view bbox.
     # Default 0 keeps 217546/218443. HMA=1 GEOM=1 full-block copies want 1.
     EXTRA_ENV+=(DSV4_STORAGE_UPSTREAM_SPAN="${DSV4_STORAGE_UPSTREAM_SPAN:-0}")
-    EXTRA_ENV+=(DSV4_BACKEND_DETECT="${DSV4_BACKEND_DETECT:-1}")
-    EXTRA_ENV+=(DSV4_DEFER_DIAG="${DSV4_DEFER_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_RID_MAP_DIAG="${DSV4_RID_MAP_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_WRITE_DIAG="${DSV4_WRITE_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_DECODE_DIAG="${DSV4_DECODE_DIAG:-1}")
-    EXTRA_ENV+=(DSV4_KV_HASH="${DSV4_KV_HASH:-1}")
     # 223392: yaml decode is FULL_DECODE_ONLY. DSV4_EAGER=1 splits CUDA-graph
     # capture vs compress_ratio: DECODE_CUDAGRAPH_MODE=NONE with +quant_fp8.
     # NEVER --enforce-eager (AITER aiter_tensor_t crash). Submit-time wins yaml.
@@ -535,7 +522,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
     EXTRA_ENV+=(DSV4_DP_PROBE="${DSV4_DP_PROBE:-0}")
     EXTRA_ENV+=(VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-DEBUG}")
     EXTRA_ENV+=(PROXY_LOG_LEVEL="${PROXY_LOG_LEVEL:-DEBUG}")
-    EXTRA_ENV+=(VLLM_PD_DEBUG="${VLLM_PD_DEBUG:-1}")
     EXTRA_ENV+=(CURL_SUITE=short)
     # 36367 is in ip_local_port_range; a DP worker can steal it (218629).
     EXTRA_ENV+=(MORI_PROXY_PING_PORT="${MORI_PROXY_PING_PORT:-36367}")
@@ -560,7 +546,12 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
         fi
         NIAH_WARMUP=0
         NIAH_TIMEOUT="${NIAH_TIMEOUT:-1800}"
-        NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-1}"
+        # validate must finish the ladder so smoke still has a full NIAH log.
+        if [[ "$BENCH" == "validate" ]]; then
+            NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-0}"
+        else
+            NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-1}"
+        fi
         EXTRA_ENV+=(NIAH_METHOD="$NIAH_METHOD")
         EXTRA_ENV+=(NIAH_DS_WRAP=0)
         EXTRA_ENV+=(NIAH_TERSE="${NIAH_TERSE:-0}")
