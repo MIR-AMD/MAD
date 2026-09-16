@@ -25,6 +25,8 @@ fuser -k 15000/tcp 2>/dev/null || true
 fuser -k 30000/tcp 2>/dev/null || true
 fuser -k 36367/tcp 2>/dev/null || true   # router discovery / moriio proxy_ping
 fuser -k 20005/tcp 2>/dev/null || true   # serve port
+fuser -k 13345/tcp 2>/dev/null || true   # VLLM_DP_Coordinator (stale-run port clash)
+fuser -k 39566/tcp 2>/dev/null || true   # data-parallel master port
 sleep 2
 
 mkdir -p /tmp/vllm_cache/{aiter_jit,triton,vllm,comgr} 2>/dev/null || true
@@ -49,18 +51,57 @@ fi
 _RDMA_MOUNTS=""
 _LIBDIR=/usr/lib/x86_64-linux-gnu
 for _lib in libibverbs.so libibverbs.so.1 librdmacm.so librdmacm.so.1; do
-    [ -e "$_LIBDIR/$_lib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/$_lib:$_LIBDIR/$_lib:ro"
+    [ -f "$_LIBDIR/$_lib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/$_lib:$_LIBDIR/$_lib:ro"
 done
 for _vlib in $_LIBDIR/libibverbs.so.1.* $_LIBDIR/librdmacm.so.1.*; do
-    [ -e "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
+    [ -f "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
 done
 for _pattern in libmlx5.so* libionic*.so* libbnxt_re*.so* libefa.so* libhns.so*; do
     for _vlib in $_LIBDIR/${_pattern}; do
-        [ -e "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
+        [ -f "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
     done
 done
 [ -d "$_LIBDIR/libibverbs" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/libibverbs:$_LIBDIR/libibverbs:ro"
 [ -d /etc/libibverbs.d ]     && _RDMA_MOUNTS="$_RDMA_MOUNTS -v /etc/libibverbs.d:/etc/libibverbs.d:ro"
+
+# k3: optional instrumented MoRIIO connector overlay for the K3_MORIIO_TRACE probe.
+# Bind-mounts a host copy of moriio_connector.py over the image baked-in path so we can
+# localize the disagg KV-transfer/notify stall WITHOUT rebuilding the image. No-op unless
+# K3_MORIIO_TRACE_SRC points at an existing (in-container-visible) file.
+_MORIIO_TRACE_MOUNT=""
+if [ -n "${K3_MORIIO_TRACE_SRC:-}" ] && [ -f "${K3_MORIIO_TRACE_SRC}" ]; then
+    _MORIIO_TRACE_MOUNT="-v ${K3_MORIIO_TRACE_SRC}:/usr/local/lib/python3.12/dist-packages/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_connector.py:ro"
+    echo "MoRIIO trace overlay: ${K3_MORIIO_TRACE_SRC} -> image moriio_connector.py (K3_MORIIO_TRACE=${K3_MORIIO_TRACE:-0})"
+fi
+
+# k3 F40: optional kimi_k3 reasoning-parser overlay. Bind-mounts a host copy of
+# kimi_k3_reasoning_parser.py over the image baked-in path so the chat-endpoint
+# content-extraction fix applies at serve time WITHOUT rebuilding the image.
+# No-op unless K3_PARSER_SRC points at an existing (in-container-visible) file.
+_PARSER_OVERLAY_MOUNT=""
+if [ -n "${K3_PARSER_SRC:-}" ] && [ -f "${K3_PARSER_SRC}" ]; then
+    _PARSER_OVERLAY_MOUNT="-v ${K3_PARSER_SRC}:/usr/local/lib/python3.12/dist-packages/vllm/reasoning/kimi_k3_reasoning_parser.py:ro"
+    echo "K3 parser overlay: ${K3_PARSER_SRC} -> image kimi_k3_reasoning_parser.py (K3F40_TRACE=${K3F40_TRACE:-0})"
+fi
+
+_MOE_OVERLAY_MOUNTS=""
+if [ -n "${K3_MOE_SRC_DIR:-}" ]; then
+    _MB=/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe
+    [ -f "${K3_MOE_SRC_DIR}/oracle_mxfp4.py" ] && _MOE_OVERLAY_MOUNTS="$_MOE_OVERLAY_MOUNTS -v ${K3_MOE_SRC_DIR}/oracle_mxfp4.py:$_MB/oracle/mxfp4.py:ro"
+    [ -f "${K3_MOE_SRC_DIR}/aiter_mxfp4_w4a8_moe.py" ] && _MOE_OVERLAY_MOUNTS="$_MOE_OVERLAY_MOUNTS -v ${K3_MOE_SRC_DIR}/aiter_mxfp4_w4a8_moe.py:$_MB/experts/aiter_mxfp4_w4a8_moe.py:ro"
+    [ -f "${K3_MOE_SRC_DIR}/rocm_aiter_moe.py" ] && _MOE_OVERLAY_MOUNTS="$_MOE_OVERLAY_MOUNTS -v ${K3_MOE_SRC_DIR}/rocm_aiter_moe.py:$_MB/experts/rocm_aiter_moe.py:ro"
+    echo "K3 MoE overlay (F49): ${K3_MOE_SRC_DIR} -> fused_moe {oracle/mxfp4,experts/aiter_mxfp4_w4a8_moe,experts/rocm_aiter_moe}.py"
+fi
+
+# k3 B2fix: optional MoRIIO engine overlay. Bind-mounts a host copy of moriio_engine.py
+# over the image baked-in path so the repaired K3_WRITE_READBACK read-after-write RDMA
+# fence (batch_read with Sequence args) applies at serve time WITHOUT rebuilding the
+# image. No-op unless K3_ENGINE_SRC points at an existing (in-container-visible) file.
+_ENGINE_OVERLAY_MOUNT=""
+if [ -n "${K3_ENGINE_SRC:-}" ] && [ -f "${K3_ENGINE_SRC}" ]; then
+    _ENGINE_OVERLAY_MOUNT="-v ${K3_ENGINE_SRC}:/usr/local/lib/python3.12/dist-packages/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_engine.py:ro"
+    echo "MoRIIO engine overlay (B2fix): ${K3_ENGINE_SRC} -> image moriio_engine.py"
+fi
 
 docker run --rm \
     --device /dev/dri --device /dev/kfd --device /dev/infiniband \
@@ -75,6 +116,10 @@ docker run --rm \
     -v $NIXL_REPO_DIR:$NIXL_COOKBOOK_PATH \
     -v /tmp/vllm_cache:/tmp/vllm_cache \
     ${_JIT_CACHE_MOUNT} \
+    ${_MORIIO_TRACE_MOUNT} \
+    ${_PARSER_OVERLAY_MOUNT} \
+    ${_MOE_OVERLAY_MOUNTS} \
+    ${_ENGINE_OVERLAY_MOUNT} \
     $_RDMA_MOUNTS \
     --entrypoint /bin/bash \
     -e SLURM_JOB_ID=$SLURM_JOB_ID \
@@ -94,10 +139,22 @@ docker run --rm \
     -e CONNECTOR=$CONNECTOR \
     -e WIDE_EP=$WIDE_EP \
     ${EP_BACKEND:+-e EP_BACKEND=$EP_BACKEND} \
+    ${DECODE_MORI_BACKEND:+-e DECODE_MORI_BACKEND=$DECODE_MORI_BACKEND} \
+    ${PREFILL_MORI_BACKEND:+-e PREFILL_MORI_BACKEND=$PREFILL_MORI_BACKEND} \
+    ${KV_CACHE_MEMORY_BYTES:+-e KV_CACHE_MEMORY_BYTES=$KV_CACHE_MEMORY_BYTES} \
+    ${MAX_NUM_BATCHED_TOKENS:+-e MAX_NUM_BATCHED_TOKENS=$MAX_NUM_BATCHED_TOKENS} \
+    ${MAX_MODEL_LEN:+-e MAX_MODEL_LEN=$MAX_MODEL_LEN} \
+    ${KV_CACHE_DTYPE:+-e KV_CACHE_DTYPE=$KV_CACHE_DTYPE} \
+    ${KV_BLOCK_SIZE:+-e KV_BLOCK_SIZE=$KV_BLOCK_SIZE} \
+    -e VLLM_ROCM_USE_AITER=${VLLM_ROCM_USE_AITER:-1} \
+    -e VLLM_ROCM_USE_AITER_MLA=${VLLM_ROCM_USE_AITER_MLA:-0} \
+    -e VLLM_ROCM_USE_AITER_PAGED_ATTN=${VLLM_ROCM_USE_AITER_PAGED_ATTN:-0} \
+    -e VLLM_ROCM_USE_AITER_RMSNORM=${VLLM_ROCM_USE_AITER_RMSNORM:-1} \
+    -e VLLM_USE_AITER_TRITON_SILU_MUL=${VLLM_USE_AITER_TRITON_SILU_MUL:-0} \
     -e PROXY_TYPE=${PROXY_TYPE:-vllm_router} \
     -e ROUTER_PORT=${ROUTER_PORT:-30000} \
     ${ROUTER_BINARY:+-e ROUTER_BINARY=$ROUTER_BINARY} \
-    -e GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.8} \
+    ${GPU_MEMORY_UTILIZATION:+-e GPU_MEMORY_UTILIZATION=$GPU_MEMORY_UTILIZATION} \
     -e GPUS_PER_NODE=${GPUS_PER_NODE:-8} \
     -e MORI_SOCKET_IFNAME=${MORI_SOCKET_IFNAME:-eth0} \
     -e DISTRIBUTED_TIMEOUT_SECONDS=${DISTRIBUTED_TIMEOUT_SECONDS:-7200} \
@@ -108,6 +165,28 @@ docker run --rm \
     -e HSA_ENABLE_IPC_MODE_LEGACY=${HSA_ENABLE_IPC_MODE_LEGACY:-0} \
     -e MORI_GPU_ARCHS=${MORI_GPU_ARCHS:-gfx942} \
     -e HSA_NO_SCRATCH_RECLAIM=${HSA_NO_SCRATCH_RECLAIM:-1} \
+    ${DECODE_CUDAGRAPH_MODE:+-e DECODE_CUDAGRAPH_MODE=$DECODE_CUDAGRAPH_MODE} \
+    ${CUDAGRAPH_CAPTURE_SIZES:+-e CUDAGRAPH_CAPTURE_SIZES="$CUDAGRAPH_CAPTURE_SIZES"} \
+    ${K3_MORIIO_TRACE:+-e K3_MORIIO_TRACE=$K3_MORIIO_TRACE} \
+    ${K3F40_TRACE:+-e K3F40_TRACE=$K3F40_TRACE} \
+    ${K3F40_TRACE_FILE:+-e K3F40_TRACE_FILE=$K3F40_TRACE_FILE} \
+     \
+    ${K3_WRITE_READBACK:+-e K3_WRITE_READBACK=$K3_WRITE_READBACK} \
+    ${K3_WRITE_READBACK_BYTES:+-e K3_WRITE_READBACK_BYTES=$K3_WRITE_READBACK_BYTES} \
+    ${K3_WRITE_READBACK_MAX:+-e K3_WRITE_READBACK_MAX=$K3_WRITE_READBACK_MAX} \
+    ${K3_WRITE_FENCE:+-e K3_WRITE_FENCE=$K3_WRITE_FENCE} \
+    ${K3_WRITE_FENCE_MS:+-e K3_WRITE_FENCE_MS=$K3_WRITE_FENCE_MS} \
+    ${K3_WRITE_DEVSYNC:+-e K3_WRITE_DEVSYNC=$K3_WRITE_DEVSYNC} \
+     \
+     \
+     \
+     \
+     \
+     \
+     \
+    ${BENCHMARK_SCRIPT_FILE:+-e BENCHMARK_SCRIPT_FILE=$BENCHMARK_SCRIPT_FILE} \
+    ${VLLM_TORCH_PROFILER_DIR:+-e VLLM_TORCH_PROFILER_DIR=$VLLM_TORCH_PROFILER_DIR} \
+    ${VLLM_LOGGING_LEVEL:+-e VLLM_LOGGING_LEVEL=$VLLM_LOGGING_LEVEL} \
     --name $DOCKER_CONT_NAME \
     $DOCKER_IMAGE_NAME -c "
         mkdir -p /run_logs/${SLURM_JOB_ID}
