@@ -215,44 +215,63 @@ preflight() {
     return 0
 }
 
+# Write the whole boot sequence to a file under LOG_DIR (shared, and mounted in
+# the container at /run_logs) and have the container run that file.
+#
+# Do NOT inline the serve command into the docker -c string: it would cross TWO
+# shells (srun bash -c, then the container's bash -c), so a single printf '%q'
+# is consumed by the first and the second strips what is left. That silently
+# turned --compilation-config into {cudagraph_mode:FULL_DECODE_ONLY,...} with no
+# quotes and killed every rank of 435749 on
+# `Invalid JSON: key must be a string`. A file is read by exactly one shell.
+#
+# The mori combine fix (Wei Sun / mori#475) is applied on BOTH nodes for every
+# cell, including the allgather cell, so the source tree is identical across the
+# A/B and a patch difference cannot be mistaken for a backend result. NOTE
+# (17 Sep): EP8 booted unpatched on v0290/mori07bdace, so the assert below may be
+# the only thing proving the patch is present at all.
+write_serve_script() {
+    local path="$1"; shift
+    {
+        echo '#!/bin/bash'
+        echo 'set -e'
+        echo "python3 ${COOKBOOK}/apply_mori_combine_original_topk_fix.py /usr/local/lib/python3.12/dist-packages/vllm"
+        echo 'n=$(grep -c _original_topk_ids /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/prepare_finalize/mori.py || true)'
+        echo 'echo "[combine-patch] _original_topk_ids occurrences=$n"'
+        echo '[ "$n" -ge 3 ] || { echo "[combine-patch] FATAL: patch did not land"; exit 3; }'
+        printf 'exec vllm serve'
+        printf ' %q' "$@"
+        printf '\n'
+    } > "$path"
+    chmod +x "$path"
+}
+
 launch_cell() {
     local cell="$1" a2a="$2"
-    local args child_args
+    local args
     mapfile -t args < <(common_serve_args "$a2a")
 
     MASTER_NAME="dsv4ep16-${SLURM_JOB_ID}-${cell}-m"
     CHILD_NAME="dsv4ep16-${SLURM_JOB_ID}-${cell}-c"
 
-    # The mori combine fix (Wei Sun / mori#475) is applied on BOTH nodes for
-    # every cell, including the allgather cell, so the source tree is identical
-    # across the A/B and a patch difference cannot be mistaken for a backend
-    # result. NOTE (17 Sep): EP8 booted unpatched on v0290/mori07bdace, so the
-    # assert below may be the only thing proving the patch is present at all.
-    local patch_block="
-python3 ${COOKBOOK}/apply_mori_combine_original_topk_fix.py \
-    /usr/local/lib/python3.12/dist-packages/vllm
-n=\\\$(grep -c _original_topk_ids \
-    /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/prepare_finalize/mori.py || true)
-echo \\\"[combine-patch] _original_topk_ids occurrences=\\\$n\\\"
-[ \\\"\\\$n\\\" -ge 3 ] || { echo '[combine-patch] FATAL: patch did not land'; exit 3; }
-"
+    write_serve_script "${LOG_DIR}/boot_${cell}_child.sh" \
+        "${args[@]}" --headless --data-parallel-start-rank "${DP_LOCAL}"
+    write_serve_script "${LOG_DIR}/boot_${cell}_master.sh" \
+        "${args[@]}" "--api-server-count=${DP_LOCAL}"
 
     # Child first: the master blocks on the DP handshake, so starting it second
     # avoids a startup-timeout race on the child's much slower first JIT.
     echo "[launch] child  $NODE1  ranks 8-15  (--headless --data-parallel-start-rank 8)"
-    child_args=$(printf '%q ' "${args[@]}" --headless --data-parallel-start-rank "${DP_LOCAL}")
     on_node "$NODE1" "docker rm -f $CHILD_NAME >/dev/null 2>&1 || true; \
         docker run -d --name $CHILD_NAME $(docker_common_for) \
-        --entrypoint /bin/bash $IMAGE -c \"set -e${patch_block}exec vllm serve ${child_args}\" >/dev/null"
+        --entrypoint /bin/bash $IMAGE /run_logs/boot_${cell}_child.sh >/dev/null"
 
     sleep 10
 
     echo "[launch] master $NODE0  ranks 0-7   (--api-server-count=${DP_LOCAL})"
-    local master_args
-    master_args=$(printf '%q ' "${args[@]}" "--api-server-count=${DP_LOCAL}")
     on_node "$NODE0" "docker rm -f $MASTER_NAME >/dev/null 2>&1 || true; \
         docker run -d --name $MASTER_NAME $(docker_common_for) \
-        --entrypoint /bin/bash $IMAGE -c \"set -e${patch_block}exec vllm serve ${master_args}\" >/dev/null"
+        --entrypoint /bin/bash $IMAGE /run_logs/boot_${cell}_master.sh >/dev/null"
 }
 
 teardown_cell() {
