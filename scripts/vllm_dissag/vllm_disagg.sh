@@ -246,6 +246,17 @@ if [ "$NODE_RANK" -eq 0 ]; then
     [[ "${DRY_RUN:-0}" == "1" ]] && { echo "[dry-run] rank0 prefill master emitted; skipping proxy/benchmark."; exit 0; }
 
     connector_wait_workers_ready
+    # HOLD_AFTER_READY=1: keep P+D up, skip router/toy proxy and the bench.
+    # Children block on MASTER:PROXY_PORT until something listens, then until
+    # that port closes — so a later manual proxy on :10001 is the teardown gate.
+    if [[ "${HOLD_AFTER_READY:-0}" == "1" ]]; then
+        echo "[hold] P+D Application startup complete. Skipping proxy/router and bench."
+        echo "[hold] Launch proxy on NODE0 :${PROXY_PORT:-10001} (discovery :${MORI_PROXY_PING_PORT:-36367})."
+        echo "[hold] Engines stay until walltime, or until prefill master exits."
+        wait "$local_worker_pid" || true
+        echo "[hold] prefill master exited; sleeping until slurm walltime"
+        sleep infinity
+    fi
     connector_start_proxy
 
     # connector_start_proxy sets BENCHMARK_PORT (router->ROUTER_PORT, toy->PROXY_PORT).
