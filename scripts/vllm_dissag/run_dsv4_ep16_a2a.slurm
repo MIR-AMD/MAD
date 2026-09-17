@@ -70,6 +70,9 @@ COOKBOOK=/opt/nixl-vllm-cookbook
 ISL="${BENCH_ISL:-32}"
 OSL="${BENCH_OSL:-32}"
 CONS="${BENCHMARK_CON:-1}"
+# 16 x 32 tok at con=1 is ~3 min even in the 300 ms MoRI regime. Anything past
+# this is the 435757 deadlock, and four hung passes would eat half the job.
+BENCH_TIMEOUT="${BENCH_TIMEOUT:-600}"
 
 # allgather first: it is the unknown. mori is the control with a known value.
 CELLS="${CELLS:-ep16_allgather ep16_mori ep16_mori_ht}"
@@ -100,6 +103,14 @@ fi
 
 DP_TOTAL=16
 DP_LOCAL=8
+
+# 435757 ran 8 API servers in front of 16 cross-node DP engines and the server
+# deadlocked after ~2 requests: /health kept answering 200 while every engine on
+# both nodes went silent and a plain curl completion timed out at 180 s with no
+# response and no error anywhere. Per-API-server stats also made /metrics
+# useless (the process holding the counters was not the one answering). Until
+# that is understood, front the engines with a single API server.
+API_SERVER_COUNT="${API_SERVER_COUNT:-1}"
 
 echo "=== DSV4 EP16 all2all-backend A/B (2 nodes, no PD / proxy / router) ==="
 echo "Job:      $SLURM_JOB_ID"
@@ -257,7 +268,7 @@ launch_cell() {
     write_serve_script "${LOG_DIR}/boot_${cell}_child.sh" \
         "${args[@]}" --headless --data-parallel-start-rank "${DP_LOCAL}"
     write_serve_script "${LOG_DIR}/boot_${cell}_master.sh" \
-        "${args[@]}" "--api-server-count=${DP_LOCAL}"
+        "${args[@]}" "--api-server-count=${API_SERVER_COUNT}"
 
     # Child first: the master blocks on the DP handshake, so starting it second
     # avoids a startup-timeout race on the child's much slower first JIT.
@@ -340,7 +351,13 @@ run_cell() {
             [ "$con" = warmup ] && c=1
             [ "$c" -gt 8 ] && n=$((c * 4))
             echo "[RUNNING] ${cell} tag=${con} con=${c} prompts=${n}"
-            on_node "$NODE0" "timeout 1800 docker run --rm --network host $IMAGE \
+            # -v /mnt is required: without it the client cannot see the model
+            # dir, transformers treats the path as a HF repo id and dies on
+            # `Repo id must be in the form 'repo_name'...` (435757).
+            on_node "$NODE0" "timeout ${BENCH_TIMEOUT} docker run --rm --network host \
+                -v /mnt:/mnt -v /shared_inference:/shared_inference \
+                -v ${LOG_DIR}:/run_logs \
+                $IMAGE \
                 vllm bench serve \
                     --model $MODEL_PATH --backend vllm \
                     --host 127.0.0.1 --port $PORT \
@@ -350,15 +367,33 @@ run_cell() {
                     --num-prompts $n --request-rate inf --ignore-eos \
                     --percentile-metrics ttft,tpot,itl \
                     --max-concurrency $c"
-            [ $? -eq 124 ] && echo "[STALL] ${cell} con=${c} timed out"
+            local rc=$?
+            if [ "$rc" -ne 0 ]; then
+                echo "[STALL] ${cell} tag=${con} con=${c} rc=${rc} (124 = hit ${BENCH_TIMEOUT}s)"
+                # 435757 deadlocked the server after ~2 requests. If warmup
+                # cannot finish, every later pass will burn the full timeout
+                # for nothing, so give up on the cell and keep the walltime.
+                if [ "$con" = warmup ]; then
+                    echo "[STALL] ${cell} warmup did not finish -- skipping its remaining passes"
+                    break
+                fi
+            fi
         done
     } 2>&1 | tee "$bench_log"
 
-    local itl ttft
+    # A cell whose server came up but whose bench produced nothing is NOT OK.
+    # 435757 recorded `OK | ITL=- ms` for both cells while the client was dying
+    # on every invocation; the status has to reflect the harvest, not the boot.
+    local itl ttft status=OK
     itl=$(awk '/Median ITL/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
     ttft=$(awk '/Median TTFT/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
-    echo "${cell} | a2a=${a2a} | OK | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
-    echo "[harvest] ${cell} median ITL=${itl} ms TTFT=${ttft} ms"
+    [ "$itl" = "-" ] && status=BENCH_FAILED
+    echo "${cell} | a2a=${a2a} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
+    echo "[harvest] ${cell} status=${status} median ITL=${itl} ms TTFT=${ttft} ms"
+    if [ "$status" != OK ]; then
+        echo "[harvest] ${cell} bench produced no result -- last 20 lines:"
+        tail -20 "$bench_log"
+    fi
 
     teardown_cell "$cell"
 }
@@ -406,9 +441,26 @@ else
     echo "[hold] preflight failed; not serving. Node is still held."
 fi
 
+# Leave the hold loop before the wall. On TIMEOUT slurm revokes the allocation
+# BEFORE the script's TERM trap runs, so every `srun` in cleanup() comes back
+# `Slurm job has expired` and the containers survive holding all 16 GPUs
+# (435757 left the master up on node 089 for 20 min). Exiting early keeps the
+# allocation alive long enough for the trap to reach both nodes.
+END_EPOCH=$(date -d "$(squeue -h -j "${SLURM_JOB_ID}" -o %e 2>/dev/null)" +%s 2>/dev/null || echo 0)
+HOLD_MARGIN="${HOLD_MARGIN:-300}"
+
+tick=0
 while true; do
-    sleep 300 &
+    sleep 60 &
     wait $! || break
-    left=$(squeue -h -j "${SLURM_JOB_ID}" -o %L 2>/dev/null)
-    echo "[hold] $(date -u +%H:%M:%SZ) time_left=${left:-unknown}"
+    tick=$(( tick + 1 ))
+    if [ "$END_EPOCH" -gt 0 ]; then
+        left=$(( END_EPOCH - $(date +%s) ))
+        if [ "$left" -lt "$HOLD_MARGIN" ]; then
+            echo "[hold] ${left}s to the wall -- releasing now so cleanup can still srun."
+            break
+        fi
+    fi
+    [ $(( tick % 5 )) -eq 0 ] &&
+        echo "[hold] $(date -u +%H:%M:%SZ) time_left=$(squeue -h -j "${SLURM_JOB_ID}" -o %L 2>/dev/null)"
 done
