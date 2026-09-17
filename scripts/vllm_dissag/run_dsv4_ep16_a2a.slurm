@@ -213,7 +213,7 @@ common_serve_args() {
 # here, and booting into it wastes the whole load time (node 094, 17 Sep: a job
 # cancelled 29 h earlier still held ~159 GiB/GPU and `sinfo` said idle).
 preflight() {
-    local node="$1" busy
+    local node="$1" busy avail_kb avail_gb
     busy=$(on_node "$node" \
         "rocm-smi --showmemuse 2>/dev/null | grep -oP 'VRAM%\\): \\K[0-9]+' | sort -rn | head -1")
     busy="${busy:-99}"
@@ -222,7 +222,19 @@ preflight() {
         on_node "$node" "docker ps --format '{{.Names}}\t{{.Status}}'" || true
         return 1
     fi
-    echo "[preflight] $node clean (max ${busy}% VRAM)"
+
+    # Free VRAM is not enough. Node 079 (436056) was idle with 0% VRAM and every
+    # docker run on it died in 2 s with exit 125, `no space left on device`
+    # creating a containerd snapshot dir -- so the cell burned two boots and
+    # reported NOT_READY as if the server had failed to come up.
+    avail_kb=$(on_node "$node" "df -P /var/lib 2>/dev/null | awk 'NR==2{print \$4}'")
+    avail_gb=$(( ${avail_kb:-0} / 1048576 ))
+    if [ "$avail_gb" -lt "${MIN_DISK_GB:-20}" ]; then
+        echo "[preflight] ABORT: $node has only ${avail_gb} GiB free on /var/lib -- docker cannot start."
+        return 1
+    fi
+
+    echo "[preflight] $node clean (max ${busy}% VRAM, ${avail_gb} GiB free on /var/lib)"
     return 0
 }
 
@@ -279,7 +291,7 @@ launch_cell() {
 
     sleep 10
 
-    echo "[launch] master $NODE0  ranks 0-7   (--api-server-count=${DP_LOCAL})"
+    echo "[launch] master $NODE0  ranks 0-7   (--api-server-count=${API_SERVER_COUNT})"
     on_node "$NODE0" "docker rm -f $MASTER_NAME >/dev/null 2>&1 || true; \
         docker run -d --name $MASTER_NAME $(docker_common_for) \
         --entrypoint /bin/bash $IMAGE /run_logs/boot_${cell}_master.sh >/dev/null"
@@ -306,9 +318,11 @@ run_cell() {
     echo "## CELL ${cell}   -tp 1  dp=${DP_TOTAL}  ep=${DP_TOTAL}  a2a=${a2a}"
     echo "############################################################"
 
+    # A node that is dirty or out of disk will not heal inside this job, so do
+    # not march the remaining cells through it -- give the allocation back.
     if ! preflight "$NODE0" || ! preflight "$NODE1"; then
         echo "${cell} | a2a=${a2a} | DIRTY_NODE | - | -" >> "$SUMMARY"
-        return 0
+        return 2
     fi
 
     launch_cell "$cell" "$a2a"
@@ -398,8 +412,14 @@ run_cell() {
     teardown_cell "$cell"
 }
 
+ABORTED=0
 for cell in $CELLS; do
     run_cell "$cell"
+    if [ $? -eq 2 ]; then
+        echo "[main] unusable node -- aborting the remaining cells."
+        ABORTED=1
+        break
+    fi
 done
 
 echo ""
@@ -420,6 +440,12 @@ echo "========================================================"
 if [ "${HOLD:-1}" != 1 ]; then
     echo "[hold] HOLD=0 -- exiting and tearing down."
     exit 0
+fi
+
+if [ "$ABORTED" = 1 ]; then
+    echo "[hold] skipped: the node is unusable, so holding it only wastes the reservation."
+    echo "[hold] resubmit with --exclude=<bad node>."
+    exit 1
 fi
 
 HOLD_CELL="${HOLD_CELL:-ep16_allgather}"
