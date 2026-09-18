@@ -402,6 +402,10 @@ run_cell() {
     itl=$(awk '/Median ITL/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
     ttft=$(awk '/Median TTFT/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
     [ "$itl" = "-" ] && status=BENCH_FAILED
+    # A timed-out pass still prints a report for whatever finished before the
+    # hang -- 436083 harvested `OK | ITL=52.08` from ONE warmup request on a
+    # deadlocked server. Any STALL in the log disqualifies the whole cell.
+    grep -q '^\[STALL\]' "$bench_log" && status=STALLED
     echo "${cell} | a2a=${a2a} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
     echo "[harvest] ${cell} status=${status} median ITL=${itl} ms TTFT=${ttft} ms"
     if [ "$status" != OK ]; then
