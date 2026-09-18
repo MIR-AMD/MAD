@@ -299,8 +299,11 @@ launch_cell() {
 
 teardown_cell() {
     local cell="$1"
-    on_node "$NODE0" "docker logs $MASTER_NAME > /run_logs/serve_${cell}_master.log 2>&1 || true"
-    on_node "$NODE1" "docker logs $CHILD_NAME  > /run_logs/serve_${cell}_child.log  2>&1 || true"
+    # Redirect on this side, not on the node: /run_logs exists only inside the
+    # container, so `docker logs ... > /run_logs/...` in the remote shell fails
+    # and every cell's serve log was silently lost.
+    on_node "$NODE0" "docker logs $MASTER_NAME" > "${LOG_DIR}/serve_${cell}_master.log" 2>&1 || true
+    on_node "$NODE1" "docker logs $CHILD_NAME"  > "${LOG_DIR}/serve_${cell}_child.log"  2>&1 || true
     on_node "$NODE0" "docker rm -f $MASTER_NAME >/dev/null 2>&1 || true"
     on_node "$NODE1" "docker rm -f $CHILD_NAME  >/dev/null 2>&1 || true"
     MASTER_NAME=""
