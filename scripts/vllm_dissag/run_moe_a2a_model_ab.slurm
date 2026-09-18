@@ -363,7 +363,11 @@ preflight() {
     # Bytes are not enough. That same NVMe was at 100% INODES (1334 free of
     # 35.6M), and an overlayfs snapshot is thousands of small files, so a
     # byte-only check can wave through a node where docker still cannot start.
-    ifree="$(on_node "df -i --output=iavail '${probe}' 2>/dev/null | tail -1 | tr -dc 0-9" 2>/dev/null | tail -1)"
+    # `df -i --output=iavail` is rejected -- the two options are mutually
+    # exclusive in coreutils -- which is why 436486 logged `? inodes free`
+    # and skipped this check entirely. -P keeps each filesystem on one line so
+    # a long device name cannot shift the column.
+    ifree="$(on_node "df -Pi '${probe}' 2>/dev/null | tail -1 | awk '{print \$4}' | tr -dc 0-9" 2>/dev/null | tail -1)"
     if [ -n "$ifree" ] && [ "$ifree" -lt "${MIN_DISK_INODES:-100000}" ]; then
         echo "[preflight] FAIL ${NODE0}: ${probe} has ${ifree} inodes free (< ${MIN_DISK_INODES:-100000})"
         echo "[preflight] Resubmit with --exclude=${NODE0}"
