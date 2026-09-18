@@ -250,6 +250,22 @@ DeepSeek-V4-Flash-FP8:
     # Off = 217666 path (Lisa Su). Do not call skip-swa.
     DSV4_ENABLE_HMA: "0"
     DSV4_SKIP_INDEXER_REGISTER: "0"
+    # Decode ITL. vLLM hands the MoE expert stack MoRI's whole preallocated
+    # recv buffer -- world_size * max_num_inp_token_per_rank rows, which is
+    # mnbt * EP -- so at con=1 one token per rank bought 8192 rows of MXFP4
+    # expert GEMM: 79.8% of decode GPU time against 0.6% for MoRI's comm
+    # (436457, measured with a shape probe, not inferred). 1 trims that to the
+    # rows that can hold a token this forward.
+    #
+    # 436486, Flash EP8 colocated: 308.30 -> 26.80 ms ITL, and the greedy
+    # answer is BYTE-IDENTICAL to stock (md5 df15838be8d0), so the padded rows
+    # were provably inert. Prefill is untouched by construction -- there the
+    # bound equals the buffer and the patcher takes the stock path.
+    #
+    # Still "0" here: every product row in the pickup rules was measured
+    # without it, and no PD/EP16/EP32/Pro cell has confirmed it yet. Flip at
+    # submit time (MORI_TRIM_DISPATCH=1), which wins over this value.
+    MORI_TRIM_DISPATCH: "0"
     # 217778 TYPE 1 already Lisa/Paris/London. 36-prompt curl is ~4s/tok.
     CURL_SUITE: "short"
   dp_flags: "--tokenizer-mode deepseek_v4"
@@ -321,6 +337,11 @@ DeepSeek-V4-Pro-FP8:
     # Same 217748 hole. Off = Flash 217778 Lisa Su path. TEP stays off.
     DSV4_ENABLE_HMA: "0"
     DSV4_SKIP_INDEXER_REGISTER: "0"
+    # See the Flash block above for the derivation. Pro's buffer is the same
+    # mnbt * EP shape, and Pro has 61 layers against Flash's 43, so if
+    # anything it pays more for the padding. Measured on Flash only so far --
+    # this is "0" until a Pro cell says otherwise.
+    MORI_TRIM_DISPATCH: "0"
     CURL_SUITE: "short"
   dp_flags: "--tokenizer-mode deepseek_v4"
   prefill:

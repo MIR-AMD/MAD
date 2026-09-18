@@ -237,7 +237,15 @@ esac
 
 # Walltime scales with node count (AITER JIT). validate uses niah's budget
 # (load once, then niah + smoke).
-ASSOC_MAX_WALL="${ASSOC_MAX_WALL:-08:00:00}"
+# qos low caps at 4h where the default assoc allows 8h, and asking for more
+# does NOT fail at submit -- slurm queues the job forever as
+# AssocMaxWallDurationPerJobLimit with no error to grep (224069, 223834). The
+# v0290 flow runs qos low, so a Pro validate would default to 8h and hang.
+if [[ "${QOS:-}" == "low" ]]; then
+    ASSOC_MAX_WALL="${ASSOC_MAX_WALL:-04:00:00}"
+else
+    ASSOC_MAX_WALL="${ASSOC_MAX_WALL:-08:00:00}"
+fi
 WT_BENCH="$BENCH"
 [[ "$BENCH" == "validate" ]] && WT_BENCH=niah
 if [[ -z "$TIME_ARG" ]]; then
@@ -593,6 +601,24 @@ fi
 # into docker -e; unset would keep the image ENV.
 if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
     EXTRA_ENV+=(SKIP_RUNTIME_PATCH="${SKIP_RUNTIME_PATCH:-0}")
+    # Decode ITL fix, both models. vLLM hands the MoE expert stack MoRI's whole
+    # preallocated recv buffer (world_size * max_num_inp_token_per_rank rows),
+    # so one token per rank bought 8192 rows of MXFP4 expert GEMM -- 79.8% of
+    # decode GPU time against 0.6% for MoRI's comm (436457). 436486 measured
+    # Flash EP8 colocated at 308.30 -> 26.80 ms ITL with a BYTE-IDENTICAL
+    # greedy answer (md5 df15838be8d0).
+    #
+    # Forwarded ONLY when explicitly set, so the documented precedence chain
+    # (connector default < models.yaml env: < submit-time -e) still works: the
+    # yaml loader skips any var already in the environment, so defaulting it to
+    # "0" here would make the models.yaml entry permanently dead config -- the
+    # 223837 invisible-knob class of bug, inverted. The product default lives
+    # in models.yaml; the plan line below prints which source won.
+    [[ -n "${MORI_TRIM_DISPATCH:-}" ]] && EXTRA_ENV+=(MORI_TRIM_DISPATCH="$MORI_TRIM_DISPATCH")
+    # Tripwire: assert total_recv <= bound on the first N prepare() calls, then
+    # stop syncing. A violation skips the trim rather than dropping tokens, so
+    # the worst case is stock latency, not a wrong answer.
+    [[ -n "${MORI_TRIM_CHECK:-}" ]] && EXTRA_ENV+=(MORI_TRIM_CHECK="$MORI_TRIM_CHECK")
     # v0290/v0280 do not bake vllm-router. Git+cargo at NODE0 boot (GLM
     # Dockerfile path). pip is ROUTER_BOOT_INSTALL=pip — not "latest main".
     if [[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]]; then
@@ -651,6 +677,9 @@ echo "=== WideEP bench plan ==="
 echo "BENCH=$BENCH  MODEL=$MODEL_NAME  TOPO=$TOPO  EP=$EP  xP=$xP yD=$yD  N=$N"
 echo "IMAGE=$DOCKER_IMAGE_NAME"
 echo "PROXY_TYPE=${PROXY_TYPE:-moriio_toy}  PROXY_ROUTE_DP=$PROXY_ROUTE_DP  SKIP_MORIIO_DP=${ROUTER_SKIP_MORIIO_DP_SIZE}  PING=${MORI_PROXY_PING_PORT}  CONC=${PROXY_MAX_CONCURRENCY}  WIDE_EP=1"
+# `yaml` means unset at submit time, so models.yaml decides. Printed because a
+# trim cell and a stock cell differ only by this and by ~280 ms of ITL.
+echo "MORI_TRIM=${MORI_TRIM_DISPATCH:-yaml}  TRIM_CHECK=${MORI_TRIM_CHECK:-yaml}"
 [[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]] && echo "ROUTER_BOOT=${ROUTER_BOOT_INSTALL:-}  REPO=${ROUTER_REPO:-}  REF=${ROUTER_REF:-}"
 echo "TIME=$TIME_ARG"
 [[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"

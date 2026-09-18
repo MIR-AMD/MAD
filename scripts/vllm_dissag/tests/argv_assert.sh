@@ -108,6 +108,36 @@ _has "$(cat "$DIR/connectors/moriio.sh")" "_dsv4_mixed_block_size_fix" "HMA=0 mi
 _has "$(cat "$DIR/connectors/moriio.sh")" "_dsv4_attn_transfer_fix" "HMA=0 attn-xfer is called on product PD"
 _has "$S" '-e SKIP_RUNTIME_PATCH=${SKIP_RUNTIME_PATCH:-0}' "slurm forces SKIP_RUNTIME_PATCH=0 (overrides image ENV)"
 _has "$S" '${DSV4_TRANSFER_ATTN:+-e DSV4_TRANSFER_ATTN=' "slurm forwards DSV4_TRANSFER_ATTN"
+
+# The decode ITL fix (436486: 308.30 -> 26.80 ms, byte-identical output) is
+# worth ~280 ms/token, so every link in its chain gets a static guard. It has
+# four, and breaking any one of them fails SILENTLY as "the fix did nothing":
+# the patcher must be applied, the knob must reach the container, the product
+# default must live where precedence lets it win, and the wrapper must NOT
+# default it (the yaml loader skips vars already in the environment, so a
+# wrapper default would make the yaml entry dead config).
+echo ""
+echo "=== MoRI dispatch trim is wired end to end, and opt-in ==="
+M="$(cat "$DIR/connectors/moriio.sh")"
+_has    "$M" "_mori_trim_dispatch" "moriio calls the trim patcher"
+_has    "$M" "apply_mori_trim_dispatch.py" "moriio names the trim patcher file"
+_has    "$M" 'trim=${DSV4_PATCH_TRIM' "patch roster reports trim status"
+_has    "$S" '${MORI_TRIM_DISPATCH:+-e MORI_TRIM_DISPATCH=' "slurm forwards MORI_TRIM_DISPATCH"
+_has    "$S" '${MORI_TRIM_CHECK:+-e MORI_TRIM_CHECK=' "slurm forwards MORI_TRIM_CHECK"
+W="$(cat "$DIR/run_wideep_bench.sh")"
+_hasnot "$W" 'MORI_TRIM_DISPATCH="${MORI_TRIM_DISPATCH:-0}"' \
+        "wrapper does NOT default trim (would kill the models.yaml value)"
+_has    "$W" 'MORI_TRIM=${MORI_TRIM_DISPATCH:-yaml}' "wrapper prints the effective trim source"
+_TRIM="$(python3 - "$DIR/models.yaml" <<'PY'
+import sys, yaml
+y = yaml.safe_load(open(sys.argv[1])) or {}
+print(" ".join(f"{m}={(c.get('env') or {}).get('MORI_TRIM_DISPATCH')}"
+                for m, c in sorted(y.items())
+                if isinstance(c, dict) and "MORI_TRIM_DISPATCH" in (c.get("env") or {})))
+PY
+)"
+_has "$_TRIM" "DeepSeek-V4-Flash-FP8=0" "models.yaml: Flash trim default is OFF"
+_has "$_TRIM" "DeepSeek-V4-Pro-FP8=0"   "models.yaml: Pro trim default is OFF"
 _has "$S" '${NIAH_HALT_ON_FAIL:+-e NIAH_HALT_ON_FAIL=' "slurm forwards NIAH_HALT_ON_FAIL"
 _has "$S" '${NIAH_LIST_PRIME:+-e NIAH_LIST_PRIME=' "slurm forwards NIAH_LIST_PRIME"
 _has "$S" '${MRCR_NEEDLES:+-e MRCR_NEEDLES=' "slurm forwards MRCR_NEEDLES"

@@ -237,7 +237,7 @@ _dsv4_patch_note() {
 
 _dsv4_patch_roster_dump() {
     echo "[dsv4-patch-roster] TP8_DELTA: colocated TP8 applied NONE of these (Median ITL 18ms)."
-    echo "[dsv4-patch-roster] decode_hot combine=${DSV4_PATCH_COMBINE:-NOT_CALLED} attn_backend=${DSV4_PATCH_ATTN_BACKEND:-NOT_CALLED} timer=${DSV4_PATCH_TIMER:-NOT_CALLED} eager=${DSV4_EAGER:-0} transfer_attn=${DSV4_TRANSFER_ATTN:-0} hma=${DSV4_ENABLE_HMA:-0}"
+    echo "[dsv4-patch-roster] decode_hot combine=${DSV4_PATCH_COMBINE:-NOT_CALLED} trim=${DSV4_PATCH_TRIM:-NOT_CALLED} attn_backend=${DSV4_PATCH_ATTN_BACKEND:-NOT_CALLED} timer=${DSV4_PATCH_TIMER:-NOT_CALLED} eager=${DSV4_EAGER:-0} transfer_attn=${DSV4_TRANSFER_ATTN:-0} hma=${DSV4_ENABLE_HMA:-0}"
     echo "[dsv4-patch-roster] write_boot storage=${DSV4_PATCH_STORAGE:-NOT_CALLED} mixed_bs=${DSV4_PATCH_MIXED_BS:-NOT_CALLED} gate=${DSV4_PATCH_GATE:-NOT_CALLED} attn_xfer=${DSV4_PATCH_ATTN_XFER:-NOT_CALLED} rdma_wait=${DSV4_PATCH_RDMA_WAIT:-NOT_CALLED}"
     echo "[dsv4-patch-roster] read: combine+attn_backend are ITL suspects (every decode step / kernel pick). write_boot is TTFT/WRITE. Timer: moe_combine vs mla vs indexer vs other. DSV4_EAGER=1 required or graph capture hides buckets."
 }
@@ -253,6 +253,7 @@ connector_runtime_patch() {
     if [ "${SKIP_RUNTIME_PATCH:-0}" = "1" ]; then
         echo "[dsv4] SKIP_RUNTIME_PATCH=1"
         _dsv4_patch_note COMBINE SKIPPED decode_hot
+        _dsv4_patch_note TRIM SKIPPED decode_hot
         _dsv4_patch_note ATTN_BACKEND SKIPPED decode_hot
         _dsv4_patch_note TIMER SKIPPED profile
         _dsv4_patch_roster_dump
@@ -271,6 +272,11 @@ connector_runtime_patch() {
     # suspects. decode_hot first; WRITE/boot next (curl/NIAH need them);
     # timer last so it wraps already-patched combine().
     _mori_combine_original_topk_fix
+    # Right after combine: both edit the same MoE prepare/finalize file, and
+    # this one is the decode_hot fix -- 436486 took Flash EP8 from 308.30 ms
+    # to 26.80 ms ITL with byte-identical output. Inert unless
+    # MORI_TRIM_DISPATCH=1.
+    _mori_trim_dispatch
     _dsv4_moriio_attn_backend_fix
     _dsv4_skip_noncontiguous_register
     _dsv4_mixed_block_size_fix
@@ -300,6 +306,52 @@ _mori_combine_original_topk_fix() {
         exit 1
     }
     _dsv4_patch_note COMBINE APPLIED decode_hot
+}
+
+# THE decode ITL fix (436457 diagnosis, 436475/436486 measurement). vLLM hands
+# the MoE expert stack MoRI's whole preallocated recv buffer --
+# world_size * max_num_inp_token_per_rank rows -- so one token per rank bought
+# 8192 rows of MXFP4 expert GEMM, 79.8% of decode GPU time against 0.6% for
+# MoRI's comm. Trimming to the rows that can hold a token took Flash EP8
+# colocated from 308.30 ms to 26.80 ms with a byte-identical greedy answer.
+#
+# Applied on BOTH arms so the two cells differ only by the env flag and not by
+# the patch state of the file; it does nothing unless MORI_TRIM_DISPATCH=1, so
+# an unset PD run stays byte-identical to every row already measured.
+#
+# Failure is fatal only when the trim was actually asked for. A trim=0 control
+# whose patcher failed to apply is still a perfectly valid baseline, and
+# aborting it would throw away a chained 4h cell over an anchor drift that does
+# not affect it. Unlike combine(), a missing trim cannot corrupt output -- the
+# worst case is stock latency.
+_mori_trim_dispatch() {
+    local _want="${MORI_TRIM_DISPATCH:-0}"
+    local _fail_note="not requested (trim=${_want}), continuing as a stock cell"
+    [ "${_want}" = "1" ] && _fail_note="REQUESTED trim=1"
+    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+    local _py="${_patch_dir}/apply_mori_trim_dispatch.py"
+    local _vllm_dir=""
+    if [ -f "${_py}" ]; then
+        _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
+    else
+        echo "[mori-trim] ${_py} not found"
+    fi
+    if [ -n "${_vllm_dir}" ] && [ -d "${_vllm_dir}" ]; then
+        echo "[mori-trim] applying ${_py} against ${_vllm_dir}"
+        if python3 "${_py}" "${_vllm_dir}" 2>&1; then
+            _dsv4_patch_note TRIM "APPLIED trim=${_want}" decode_hot
+            return 0
+        fi
+    elif [ -f "${_py}" ]; then
+        echo "[mori-trim] cannot locate vLLM install dir"
+    fi
+    if [ "${_want}" = "1" ]; then
+        echo "Error: [mori-trim] patch failed and ${_fail_note}. Aborting rather" >&2
+        echo "       than serve a cell labelled trim=1 that runs stock." >&2
+        exit 1
+    fi
+    echo "WARN: [mori-trim] patch failed; ${_fail_note}."
+    _dsv4_patch_note TRIM "FAILED trim=${_want}" decode_hot
 }
 
 # DSV4 Flash: MoRIIO generic MLA selector rejects fp8_ds_mla (217457/217460).
