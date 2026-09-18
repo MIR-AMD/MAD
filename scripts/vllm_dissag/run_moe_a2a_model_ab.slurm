@@ -84,6 +84,9 @@
 #                                     # cap MoRI's buffer with mnbt HELD at 1024
 #   CELLS=dsv4fls_mori TORCH_PROFILE=1 MORI_CAP_LIST="0 64" sbatch run_moe_a2a_model_ab.slurm
 #                                     # both Phase 0 experiments in one job
+#   CELLS=dsv4fls_mori TRIM_LIST="0 1" TRIM_CHECK=32 sbatch run_moe_a2a_model_ab.slurm
+#                                     # THE FIX, with its own control in the
+#                                     # same job. See TRIM_LIST.
 #
 # Pickup: ~/.cursor/rules/dsv4-flash-itl-pickup.mdc
 # ---------------------------------------------------------------------------
@@ -195,6 +198,31 @@ MORI_CAP_LIST="${MORI_CAP_LIST:-0}"
 # Costs one host sync on the first prepare() (during profile_run), then
 # nothing. Default off so an unset run stays byte-identical.
 SHAPE_PROBE="${SHAPE_PROBE:-0}"
+
+# THE FIX. Hand the expert stack the rows that can hold a token this forward
+# (world_size * max tokens on any rank) instead of MoRI's whole preallocated
+# recv buffer. See apply_mori_trim_dispatch.py for the derivation.
+#
+# A list, so one job carries its own control: "0 1" is stock then trimmed on
+# the same node, same image, same JIT cache. 0 is byte-identical to every
+# previous cell, so the 306.49/307.03/302.69/309.05 control series extends.
+#
+# Predicted at mnbt 1024 / EP8 / con=1: M 8192 -> 8, which removes the 79.8%
+# GEMM and the ~11.7% of activation-shaped work, leaving MoRI's 0.6% comm plus
+# attention. That is the 22.9 ms allgather baseline, i.e. ITL should land near
+# 25-30 ms rather than 307. Anything much above that means a second consumer
+# of the padded shape is still live and the trace has to be re-read.
+#
+# Prefill is untouched BY CONSTRUCTION -- at 1024 tokens/rank the bound equals
+# the buffer, so profile_run and prefill take the stock path. That is what
+# makes this runnable where the 436392 capacity clamp was not.
+TRIM_LIST="${TRIM_LIST:-0}"
+# Verify total_recv <= bound on the first N prepare() calls. Each costs a host
+# sync, and a violation SKIPS the trim rather than dropping tokens. Cheap
+# insurance on the first armed run; drop it to 0 once the bound is trusted,
+# since a silently wrong bound would show up as a worse answer, not a worse
+# number.
+TRIM_CHECK="${TRIM_CHECK:-0}"
 
 # Torch profiler. This is the attribution that MoRI's own profiler could not
 # give us -- 436312 showed ENABLE_PROFILER=1 GPU-faults at 0x2000001000 on
@@ -434,6 +462,11 @@ write_serve_script() {
         # touch -- all six application orders were tested against the pristine
         # v0290 file.
         echo "python3 ${COOKBOOK}/apply_mori_shape_probe.py /usr/local/lib/python3.12/dist-packages/vllm"
+        # Inert unless MORI_TRIM_DISPATCH=1. Anchors the dispatch call site and
+        # the prepare() signature, which none of the three above touch -- all
+        # 24 application orders were tested against the pristine v0290 file,
+        # and the decision logic has an offline test (tests/test_mori_trim.py).
+        echo "python3 ${COOKBOOK}/apply_mori_trim_dispatch.py /usr/local/lib/python3.12/dist-packages/vllm"
         echo 'n=$(grep -c _original_topk_ids /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/prepare_finalize/mori.py || true)'
         echo 'echo "[combine-patch] _original_topk_ids occurrences=$n"'
         echo '[ "$n" -ge 3 ] || { echo "[combine-patch] FATAL: patch did not land"; exit 3; }'
@@ -448,6 +481,7 @@ run_cell() {
     local cell="$1"
     local mnbt="${2:-1024}"
     local cap="${3:-0}"
+    local trim="${4:-0}"
     local a2a model_name model_path tag
     a2a="$(backend_for "$cell")"       || { echo "unknown backend in cell $cell" >&2; return 1; }
     model_name="$(model_for "$cell")"  || { echo "unknown model in cell $cell"   >&2; return 1; }
@@ -455,6 +489,7 @@ run_cell() {
     # Keep the uncapped tag exactly as it was so 436340's log names still match.
     tag="${cell}_mnbt${mnbt}"
     [ "$cap" != 0 ] && tag="${tag}_cap${cap}"
+    [ "$trim" != 0 ] && tag="${tag}_trim"
 
     local bench_log="${LOG_DIR}/bench_${tag}.log"
     local boot="${LOG_DIR}/boot_${tag}.sh"
@@ -468,6 +503,12 @@ run_cell() {
         PROFILE_ENV="$PROFILE_ENV -e MORI_CAP_TOKENS=${cap}"
         echo "[main] MoRI capacity capped at ${cap} tokens/rank (mnbt stays ${mnbt})"
     fi
+    if [ "$trim" != 0 ]; then
+        PROFILE_ENV="$PROFILE_ENV -e MORI_TRIM_DISPATCH=1"
+        [ "$TRIM_CHECK" != 0 ] && PROFILE_ENV="$PROFILE_ENV -e MORI_TRIM_CHECK=${TRIM_CHECK}"
+        echo "[main] dispatch trim ON: experts get world_size x per-rank tokens, not the buffer."
+        echo "[main] grep '[mori-trim]' in the serve log for the verified bound."
+    fi
     if [ "$MORI_PROFILE" = 1 ]; then
         mkdir -p "${LOG_DIR}/traces_${tag}" 2>/dev/null || true
         # Append: MORI_CAP_TOKENS may already be in here.
@@ -478,11 +519,11 @@ run_cell() {
         echo "[main] NOTE: a profiled cell's ITL is not a measurement -- the dump stalls a step."
     fi
 
-    local row="${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | cap=${cap}"
+    local row="${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | cap=${cap} | trim=${trim}"
 
     echo ""
     echo "############################################################"
-    echo "## CELL ${cell}  model=${model_name}  a2a=${a2a}  ep=${EP}  mnbt=${mnbt}  cap=${cap}"
+    echo "## CELL ${cell}  model=${model_name}  a2a=${a2a}  ep=${EP}  mnbt=${mnbt}  cap=${cap}  trim=${trim}"
     echo "############################################################"
 
     if [ ! -d "$model_path" ]; then
@@ -702,11 +743,13 @@ fi
 for cell in $CELLS; do
     for mnbt in $MNBT_LIST; do
         for cap in $MORI_CAP_LIST; do
-            # A node with leaked VRAM will fail every remaining cell
-            # identically, so give the allocation back instead of walking the
-            # same wall once per cell per mnbt per cap.
-            run_cell "$cell" "$mnbt" "$cap" \
-                || { echo "[main] unusable node -- abandoning remaining cells"; break 3; }
+            for trim in $TRIM_LIST; do
+                # A node with leaked VRAM will fail every remaining cell
+                # identically, so give the allocation back instead of walking
+                # the same wall once per cell per mnbt per cap per trim.
+                run_cell "$cell" "$mnbt" "$cap" "$trim" \
+                    || { echo "[main] unusable node -- abandoning remaining cells"; break 4; }
+            done
         done
     done
 done
@@ -721,6 +764,14 @@ echo "  mxfp4 slow, fp8 fast -> the MoRI fp4 dispatch/combine path owns it."
 echo "  both slow            -> MoRI+DP broken for every MoE model."
 echo "  both fast            -> not the quantization; and the DSA indexer is cleared."
 echo "Reference (DSV4-Flash MXFP4, EP8, 1 node, async off): mori 306.49 ms, allgather 22.9 ms."
+echo ""
+echo "Trim cells (trim=1): the fix. M drops from world_size*mnbt to world_size*tokens,"
+echo "  so at mnbt 1024 / EP8 / con=1 the 79.8% expert GEMM and ~11.7% of"
+echo "  activation-shaped work should vanish, leaving MoRI's 0.6% comm."
+echo "  Expect ITL near the 22.9 ms allgather baseline, against 307 ms at trim=0."
+echo "  Still ~300 ms -> the trim did not take: check [mori-trim] in the serve log"
+echo "  (an absent line means DP metadata was missing and it declined to guess)."
+echo "  Landing between -> a second consumer of the padded shape is still live."
 echo ""
 echo "Capacity cells (cap=N, mnbt held): fit ITL = 20.1 + 0.2816*capacity predicts"
 echo "  cap=1024 -> ~307 ms   cap=128 -> ~56 ms   cap=64 -> ~38 ms"
