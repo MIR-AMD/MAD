@@ -86,6 +86,20 @@ REPO_DIR="$(pwd)"
 COOKBOOK=/opt/nixl-vllm-cookbook
 
 EP="${EP:-8}"
+
+# 0.72, not the usual 0.80, and this is load-bearing. Both nodes tried on
+# 18 Sep carried leaked VRAM that no running process owned and that rocm-smi
+# under-reported: 097-028 stranded 42.7 GiB on GPU 4, 097-039 stranded
+# 40.5 GiB on GPU 6 (identical across reads a minute apart, so leaked, not a
+# live load). Both leave ~151 GiB free, and 0.80 asks for 153.59 -- just over,
+# so exactly one DP rank dies and the other seven hang forever in the barrier
+# inside MoRI's EpDispatchCombineOp.__init__. 0.72 asks for 138.2 GiB and
+# clears it. Two nodes out of two means excluding nodes does not work.
+#
+# This does NOT change what is measured: --kv-cache-memory-bytes pins the KV
+# cache at 20 GB regardless, so utilization only bounds the pool the cache is
+# carved from. The DSV4 reference rows are unaffected by comparison.
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.72}"
 ISL="${BENCH_ISL:-32}"
 OSL="${BENCH_OSL:-32}"
 CONS="${BENCHMARK_CON:-1}"
@@ -231,21 +245,43 @@ preflight() {
 # EpDispatchCombineOp.__init__, so the cell burns its whole readiness window
 # instead of failing fast. Wait for the node to drain rather than race it.
 # ---------------------------------------------------------------------------
+# Ask the HIP runtime, NOT rocm-smi. On the bad 097-028, rocm-smi reported
+# GPU 4 at 6.9 GB used while torch.cuda.mem_get_info(4) reported 42.66 GiB
+# used / 149.32 GiB free -- and 149.32 is just under the 153.59 GiB that
+# gpu-memory-utilization 0.80 asks for, which is what actually killed DP4.
+# An rocm-smi-based check waves that node straight through. mem_get_info is
+# the same number vLLM's request_memory() tests, so this cannot disagree with
+# the thing that fails.
+gpu_min_free_gib() {
+    on_node "docker run --rm --device /dev/dri --device /dev/kfd \
+        --group-add video --security-opt seccomp=unconfined \
+        --entrypoint /bin/bash $IMAGE -lc \
+        \"python3 -c 'import torch; print(min(torch.cuda.mem_get_info(i)[0] for i in range(torch.cuda.device_count())) // 2**30)'\"" \
+        2>/dev/null | tr -dc 0-9
+}
+
 wait_for_gpus() {
-    local budget_mb="${GPU_FREE_WAIT_MB:-10000}" i busiest
-    for i in $(seq 1 "${GPU_FREE_WAIT_POLLS:-30}"); do
-        busiest="$(on_node "rocm-smi --showmeminfo vram 2>/dev/null \
-            | awk '/VRAM Total Used Memory/{print \$NF}' | sort -n | tail -1" \
-            2>/dev/null | tail -1)"
-        if [ -n "$busiest" ] && [ "$((busiest / 1048576))" -lt "$budget_mb" ]; then
-            [ "$i" -gt 1 ] && echo "[gpu-wait] drained after $((i * 10))s"
+    # Derived from GPU_MEM_UTIL so the check and the thing it predicts cannot
+    # drift apart: vLLM's request_memory() tests exactly util * total.
+    local need i free
+    need="${GPU_FREE_NEED_GIB:-$(awk -v u="$GPU_MEM_UTIL" 'BEGIN{printf "%d", u * 191.98 + 4}')}"
+    for i in $(seq 1 "${GPU_FREE_WAIT_POLLS:-20}"); do
+        free="$(gpu_min_free_gib)"
+        if [ -n "$free" ] && [ "$free" -ge "$need" ]; then
+            [ "$i" -gt 1 ] && echo "[gpu-wait] drained after ~$((i * 30))s"
             return 0
         fi
-        [ "$i" = 1 ] && echo "[gpu-wait] busiest GPU holds $((busiest / 1048576)) MB, waiting for < ${budget_mb} MB..."
-        sleep 10
+        [ "$i" = 1 ] && echo "[gpu-wait] emptiest GPU has ${free:-?} GiB free, need ${need}; waiting..."
+        sleep 30
     done
-    echo "[gpu-wait] WARNING: still $((busiest / 1048576)) MB on the busiest GPU; launching anyway"
-    return 0
+    # Do not launch into it. One short DP rank does not fail fast: the other
+    # seven spin forever in the barrier inside MoRI's EpDispatchCombineOp
+    # __init__, so the cell eats its whole readiness window and the job walks
+    # the same wall on every remaining cell (436217 lost all four this way).
+    echo "[gpu-wait] FAIL: emptiest GPU still ${free:-?} GiB free, need ${need}."
+    echo "[gpu-wait] This node has leaked VRAM that rocm-smi does not report."
+    echo "[gpu-wait] Resubmit with --exclude=${NODE0}"
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -347,7 +383,7 @@ run_cell() {
         --enable-expert-parallel
         --all2all-backend "$a2a"
         --kv-cache-dtype fp8_e4m3
-        --gpu-memory-utilization 0.80
+        --gpu-memory-utilization "$GPU_MEM_UTIL"
         --kv-cache-memory-bytes 20000000000
         --max-num-seqs "${MAX_NUM_SEQS:-4}"
         --max-model-len "${MAX_MODEL_LEN:-40960}"
@@ -365,7 +401,10 @@ run_cell() {
     write_serve_script "$boot" "${args[@]}"
     echo "[launch] $(tail -1 "$boot" | cut -c1-240)"
 
-    wait_for_gpus
+    if ! wait_for_gpus; then
+        echo "${cell} | ${model_name} | ${a2a} | DIRTY_GPU | - | -" >> "$SUMMARY"
+        return 1
+    fi
     on_node "docker rm -f $CNAME >/dev/null 2>&1 || true; \
         docker run -d --name $CNAME $(docker_common) \
         --entrypoint /bin/bash $IMAGE /run_logs/$(basename "$boot") >/dev/null"
@@ -469,7 +508,9 @@ fi
 [ "$INSPECT" = 1 ] && inspect_image
 
 for cell in $CELLS; do
-    run_cell "$cell"
+    # A node with leaked VRAM will fail every remaining cell identically, so
+    # give the allocation back instead of walking the same wall four times.
+    run_cell "$cell" || { echo "[main] unusable node -- abandoning remaining cells"; break; }
 done
 
 echo ""
