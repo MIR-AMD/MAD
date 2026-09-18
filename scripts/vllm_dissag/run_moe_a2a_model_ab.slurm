@@ -496,6 +496,10 @@ run_cell() {
     CNAME="moeab-${SLURM_JOB_ID}-${tag}"
 
     PROFILE_ENV=""
+    # Reset per cell: a stale verdict from the previous cell would be worse
+    # than no verdict at all.
+    SMOKE_VERDICT=""
+    SMOKE_TXT=""
     if [ "$SHAPE_PROBE" = 1 ]; then
         PROFILE_ENV="-e MORI_SHAPE_PROBE=1"
     fi
@@ -640,6 +644,36 @@ run_cell() {
     if [ "$cap" != 0 ] && ! grep -q "max_num_inp_token_per_rank=${cap}\b" "${LOG_DIR}/serve_${tag}.log"; then
         echo "[main] WARNING: cap=${cap} requested but the op config does not show it."
     fi
+
+    # Coherence, not latency. `vllm bench serve` runs dataset_name=random with
+    # ignore_eos=True, so its tokens are garbage by construction and every OK
+    # row in this harness has only ever been a LATENCY verdict. That was fine
+    # while the padded GEMM was just slow, but trim=1 changes which rows the
+    # experts see, so the output has to be read once per cell.
+    #
+    # Greedy (temperature 0) on a prompt with one overwhelmingly likely
+    # continuation, so the answer is checkable by eye and comparable between
+    # cells without a scorer.
+    echo "[main] coherence curl (temperature 0, greedy):"
+    SMOKE_TXT="$(on_node "curl -s --max-time 180 http://127.0.0.1:${PORT}/v1/completions \
+        -H 'Content-Type: application/json' \
+        -d '{\"model\": \"${model_path}\", \"prompt\": \"The capital of France is\", \
+             \"max_tokens\": 24, \"temperature\": 0}'" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["text"])' \
+        2>/dev/null)"
+    echo "[smoke] ${tag}: ${SMOKE_TXT:-<EMPTY>}"
+    printf '%s\n' "$SMOKE_TXT" > "${LOG_DIR}/smoke_${tag}.txt"
+    # A word we know must appear, so a garbled cell is visible in the summary
+    # rather than only in a log nobody reads.
+    if printf '%s' "$SMOKE_TXT" | grep -qi "paris"; then
+        SMOKE_VERDICT="COHERENT"
+    elif [ -z "$SMOKE_TXT" ]; then
+        SMOKE_VERDICT="EMPTY"
+    else
+        SMOKE_VERDICT="SUSPECT"
+    fi
+    echo "[smoke] ${tag}: ${SMOKE_VERDICT}"
+
     sleep 5
 
     {
@@ -681,7 +715,7 @@ run_cell() {
     ttft=$(awk '/Median TTFT/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
     [ "$itl" = "-" ] && status=NO_RESULT
     grep -q '^\[STALL\]' "$bench_log" && status=STALLED
-    echo "${row} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
+    echo "${row} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms | ${SMOKE_VERDICT:-?}" >> "$SUMMARY"
 
     # AFTER the measured passes, so the trace cannot move the number above.
     if [ "$TORCH_PROFILE" = 1 ] && [ "$status" != NO_RESULT ]; then
