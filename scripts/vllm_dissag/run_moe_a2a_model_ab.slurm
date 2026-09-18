@@ -73,6 +73,8 @@
 #   CELLS="dsv4fls_mori" sbatch run_moe_a2a_model_ab.slurm       # re-measure the reference
 #   EP=4 sbatch run_moe_a2a_model_ab.slurm                        # narrower width
 #   HOLD=1 sbatch run_moe_a2a_model_ab.slurm                      # keep a live server
+#   MORI_PROFILE=1 CELLS=dsv4fls_mori sbatch run_moe_a2a_model_ab.slurm
+#                                     # per-phase kernel trace; ITL is void
 #
 # Pickup: ~/.cursor/rules/dsv4-flash-itl-pickup.mdc
 # ---------------------------------------------------------------------------
@@ -90,6 +92,14 @@ CONS="${BENCHMARK_CON:-1}"
 BENCH_TIMEOUT="${BENCH_TIMEOUT:-900}"
 INSPECT="${INSPECT:-1}"
 HOLD="${HOLD:-0}"
+
+# MoRI kernel profiler. Needs BOTH ENABLE_PROFILER=1 (compiles the spans into
+# the JIT build) and apply_mori_profiler_dump.py (copies the trace buffer back
+# -- vLLM never does). Off by default: the dump stalls one decode step for
+# seconds, so a profiled cell's ITL is not a measurement.
+MORI_PROFILE="${MORI_PROFILE:-0}"
+MORI_PROFILE_AT="${MORI_PROFILE_AT:-1500}"
+MORI_PROFILE_RANKS="${MORI_PROFILE_RANKS:-0}"
 
 # mxfp4 first, and each model's own allgather baseline immediately after its
 # mori cell: that way the job is interpretable at every prefix. After two
@@ -189,7 +199,7 @@ cat <<EOF
 -e VLLM_ENGINE_READY_TIMEOUT_S=10800 \
 -e VLLM_RINGBUFFER_WARNING_INTERVAL=3600 \
 -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600 \
--e VLLM_LOGGING_LEVEL=INFO
+-e VLLM_LOGGING_LEVEL=INFO ${PROFILE_ENV:-}
 EOF
 }
 
@@ -205,6 +215,37 @@ preflight() {
         return 1
     fi
     echo "[preflight] ok ${NODE0}: /var/lib ${free_gb} GB free"
+}
+
+# ---------------------------------------------------------------------------
+# The previous job's VRAM is not always released by the time slurm hands the
+# node over. 436217 lost its first cell to exactly that: DP4 raised
+#
+#   ValueError: Free memory on device cuda:4 (147.52/191.98 GiB) on startup is
+#   less than desired GPU memory utilization (0.8, 153.59 GiB)
+#
+# because something still held 44 GiB on GPU 4 -- and by the time we looked,
+# eleven minutes later, that GPU was down to 6.9 GiB with no container
+# running. Purely transient, and fatal: one dead DP rank leaves the other
+# seven spinning forever in the torch.distributed.barrier() inside MoRI's
+# EpDispatchCombineOp.__init__, so the cell burns its whole readiness window
+# instead of failing fast. Wait for the node to drain rather than race it.
+# ---------------------------------------------------------------------------
+wait_for_gpus() {
+    local budget_mb="${GPU_FREE_WAIT_MB:-10000}" i busiest
+    for i in $(seq 1 "${GPU_FREE_WAIT_POLLS:-30}"); do
+        busiest="$(on_node "rocm-smi --showmeminfo vram 2>/dev/null \
+            | awk '/VRAM Total Used Memory/{print \$NF}' | sort -n | tail -1" \
+            2>/dev/null | tail -1)"
+        if [ -n "$busiest" ] && [ "$((busiest / 1048576))" -lt "$budget_mb" ]; then
+            [ "$i" -gt 1 ] && echo "[gpu-wait] drained after $((i * 10))s"
+            return 0
+        fi
+        [ "$i" = 1 ] && echo "[gpu-wait] busiest GPU holds $((busiest / 1048576)) MB, waiting for < ${budget_mb} MB..."
+        sleep 10
+    done
+    echo "[gpu-wait] WARNING: still $((busiest / 1048576)) MB on the busiest GPU; launching anyway"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -246,6 +287,13 @@ write_serve_script() {
         echo '#!/bin/bash'
         echo 'set -e'
         echo "python3 ${COOKBOOK}/apply_mori_combine_original_topk_fix.py /usr/local/lib/python3.12/dist-packages/vllm"
+        # Applied unconditionally. Without MORI_PROFILE_DIR the trace dump is
+        # inert, but its `[mori-dispatch]` line still reports use_fp8_dispatch
+        # and the MoRI op config -- the only place the dispatch dtype, and so
+        # which MoRI kernel a model really drives, is visible. Order-independent
+        # with the combine patcher; both orders were tested against the
+        # pristine v0290 file.
+        echo "python3 ${COOKBOOK}/apply_mori_profiler_dump.py /usr/local/lib/python3.12/dist-packages/vllm"
         echo 'n=$(grep -c _original_topk_ids /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/prepare_finalize/mori.py || true)'
         echo 'echo "[combine-patch] _original_topk_ids occurrences=$n"'
         echo '[ "$n" -ge 3 ] || { echo "[combine-patch] FATAL: patch did not land"; exit 3; }'
@@ -266,6 +314,16 @@ run_cell() {
     local bench_log="${LOG_DIR}/bench_${cell}.log"
     local boot="${LOG_DIR}/boot_${cell}.sh"
     CNAME="moeab-${SLURM_JOB_ID}-${cell}"
+
+    PROFILE_ENV=""
+    if [ "$MORI_PROFILE" = 1 ]; then
+        mkdir -p "${LOG_DIR}/traces_${cell}" 2>/dev/null || true
+        PROFILE_ENV="-e ENABLE_PROFILER=1 -e MORI_PROFILE_DIR=/run_logs/traces_${cell}"
+        PROFILE_ENV="$PROFILE_ENV -e MORI_PROFILE_AT=${MORI_PROFILE_AT}"
+        PROFILE_ENV="$PROFILE_ENV -e MORI_PROFILE_RANKS=${MORI_PROFILE_RANKS}"
+        echo "[main] MoRI profiler ON -> ${LOG_DIR}/traces_${cell} (cold JIT build, ~10 min)"
+        echo "[main] NOTE: a profiled cell's ITL is not a measurement -- the dump stalls a step."
+    fi
 
     echo ""
     echo "############################################################"
@@ -307,6 +365,7 @@ run_cell() {
     write_serve_script "$boot" "${args[@]}"
     echo "[launch] $(tail -1 "$boot" | cut -c1-240)"
 
+    wait_for_gpus
     on_node "docker rm -f $CNAME >/dev/null 2>&1 || true; \
         docker run -d --name $CNAME $(docker_common) \
         --entrypoint /bin/bash $IMAGE /run_logs/$(basename "$boot") >/dev/null"
@@ -321,6 +380,15 @@ run_cell() {
         fi
         if ! on_node "docker ps --format '{{.Names}}' | grep -qx $CNAME"; then
             echo "[main] ERROR: ${cell} container exited during startup"
+            break
+        fi
+        # A dead DP rank does NOT exit the container: the surviving ranks spin
+        # forever in MoRI's init barrier while the APIServer has already given
+        # up, so the liveness check above stays true and the cell burns all 45
+        # minutes. Watch for the engine's own verdict instead.
+        if [ $((i % 6)) = 0 ] && on_node \
+            "docker logs $CNAME 2>&1 | grep -q 'Engine core initialization failed\|EngineCore failed to start'"; then
+            echo "[main] ERROR: ${cell} engine core failed to start -- not waiting out the window"
             break
         fi
         sleep 10
