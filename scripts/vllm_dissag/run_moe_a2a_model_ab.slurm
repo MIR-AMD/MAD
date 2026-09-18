@@ -169,11 +169,32 @@ MNBT_LIST="${MNBT_LIST:-1024}"
 # Hitting those with mnbt held at 1024 proves capacity is causal and clears
 # prefill chunking; flat ITL means the sweep was really about chunk size.
 #
-# DIAGNOSTIC. MoRI drops tokens handed to it beyond its capacity, so a cap is
-# only valid while every forward stays under it. con=1 with isl=32 means 32
-# tokens per rank, so 64 is safe here and would NOT be at a 1024-token prefill
-# chunk. The product fix is a per-phase capacity, not a global clamp.
+# DEAD -- 436392. Do NOT spend another job on this. Both capped cells came back
+# NOT_READY: the clamp applied correctly (op built with
+# max_num_inp_token_per_rank=128, logged on all 8 workers) and then every
+# worker died in determine_available_memory() -> profile_run, because vLLM's
+# memory profiling pushes a full max_num_batched_tokens dummy batch through the
+# MoE before any traffic exists. 1024 tokens into a 128-token buffer.
+#
+# So capacity must be >= mnbt AT STARTUP, whatever serving looks like, and a
+# global clamp cannot be tested at all. The fix has to be two handles -- full
+# capacity for profile_run and prefill, decode capacity for decode, selected
+# per forward. Kept only so the [mori-cap] line records the chosen capacity.
 MORI_CAP_LIST="${MORI_CAP_LIST:-0}"
+
+# Log, once per process, what vLLM hands MoRI vs what MoRI hands the experts.
+#
+# 436392 showed the expert GEMM is 79.6% of decode and MoRI's comm 0.6%, and
+# attributed that to prepare() returning a view of
+# (max_num_tokens_to_recv(), hidden_dim) = world_size * capacity = 8192 x 4096,
+# which modular_kernel then uses as M for the whole expert stack. That last
+# step was an inference from the mnbt correlation; this measures it.
+#
+# record_shapes does NOT answer it -- it annotates CPU op events and
+# matmul_ogs is launched from Python with no aten op carrying the shape.
+# Costs one host sync on the first prepare() (during profile_run), then
+# nothing. Default off so an unset run stays byte-identical.
+SHAPE_PROBE="${SHAPE_PROBE:-0}"
 
 # Torch profiler. This is the attribution that MoRI's own profiler could not
 # give us -- 436312 showed ENABLE_PROFILER=1 GPU-faults at 0x2000001000 on
@@ -195,6 +216,9 @@ TORCH_PROFILE="${TORCH_PROFILE:-0}"
 # decode steps. Skip past prefill, then keep the trace small enough to move.
 TORCH_PROFILE_DELAY="${TORCH_PROFILE_DELAY:-4}"
 TORCH_PROFILE_ITERS="${TORCH_PROFILE_ITERS:-8}"
+# Secondary evidence only -- see SHAPE_PROBE for why this cannot pin M on its
+# own. Inflates the trace, so it is off unless asked for.
+TORCH_PROFILE_SHAPES="${TORCH_PROFILE_SHAPES:-0}"
 
 LOG_DIR="${LOG_DIR:-/shared_inference/${USER}/model_blog_logs/${SLURM_JOB_ID}}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -405,6 +429,11 @@ write_serve_script() {
         # something lower than what vLLM computed, and it logs which it chose
         # either way. Touches a different file from the other two patchers.
         echo "python3 ${COOKBOOK}/apply_mori_capacity_clamp.py /usr/local/lib/python3.12/dist-packages/vllm"
+        # Inert unless MORI_SHAPE_PROBE=1. Anchors are in prepare() and on the
+        # __init__/finalize signatures, which the other two patchers do not
+        # touch -- all six application orders were tested against the pristine
+        # v0290 file.
+        echo "python3 ${COOKBOOK}/apply_mori_shape_probe.py /usr/local/lib/python3.12/dist-packages/vllm"
         echo 'n=$(grep -c _original_topk_ids /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/prepare_finalize/mori.py || true)'
         echo 'echo "[combine-patch] _original_topk_ids occurrences=$n"'
         echo '[ "$n" -ge 3 ] || { echo "[combine-patch] FATAL: patch did not land"; exit 3; }'
@@ -432,8 +461,11 @@ run_cell() {
     CNAME="moeab-${SLURM_JOB_ID}-${tag}"
 
     PROFILE_ENV=""
+    if [ "$SHAPE_PROBE" = 1 ]; then
+        PROFILE_ENV="-e MORI_SHAPE_PROBE=1"
+    fi
     if [ "$cap" != 0 ]; then
-        PROFILE_ENV="-e MORI_CAP_TOKENS=${cap}"
+        PROFILE_ENV="$PROFILE_ENV -e MORI_CAP_TOKENS=${cap}"
         echo "[main] MoRI capacity capped at ${cap} tokens/rank (mnbt stays ${mnbt})"
     fi
     if [ "$MORI_PROFILE" = 1 ]; then
@@ -498,6 +530,8 @@ run_cell() {
             "--profiler-config.delay_iterations=${TORCH_PROFILE_DELAY}"
             "--profiler-config.max_iterations=${TORCH_PROFILE_ITERS}"
         )
+        [ "$TORCH_PROFILE_SHAPES" = 1 ] && \
+            args+=(--profiler-config.torch_profiler_record_shapes=true)
     fi
     mapfile -t -O "${#args[@]}" args < <(extra_args_for "$cell")
     write_serve_script "$boot" "${args[@]}"
@@ -558,6 +592,9 @@ run_cell() {
     # clamp's own line and the op config are printed, so a cap that silently
     # failed to take cannot be mistaken for one that did.
     grep -m1 "\[mori-cap\]" "${LOG_DIR}/serve_${tag}.log" || true
+    # THE number: real tokens in vs padded rows out. 436392 predicts
+    # dispatch=(8192, 4096) at mnbt 1024 / EP8 against a1 of ~1 row.
+    grep -m1 "\[mori-shape\]" "${LOG_DIR}/serve_${tag}.log" || true
     grep -o "max_num_inp_token_per_rank=[0-9]*" "${LOG_DIR}/serve_${tag}.log" | sort -u || true
     if [ "$cap" != 0 ] && ! grep -q "max_num_inp_token_per_rank=${cap}\b" "${LOG_DIR}/serve_${tag}.log"; then
         echo "[main] WARNING: cap=${cap} requested but the op config does not show it."
