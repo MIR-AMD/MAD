@@ -80,6 +80,10 @@
 #                                     # 0x2000001000 on every rank.
 #   CELLS=dsv4fls_mori MNBT_LIST="1024 512 256 128" sbatch run_moe_a2a_model_ab.slurm
 #                                     # the MoRI buffer-size sweep -- see MNBT_LIST
+#   CELLS=dsv4fls_mori MORI_CAP_LIST="0 128 64" sbatch run_moe_a2a_model_ab.slurm
+#                                     # cap MoRI's buffer with mnbt HELD at 1024
+#   CELLS=dsv4fls_mori TORCH_PROFILE=1 MORI_CAP_LIST="0 64" sbatch run_moe_a2a_model_ab.slurm
+#                                     # both Phase 0 experiments in one job
 #
 # Pickup: ~/.cursor/rules/dsv4-flash-itl-pickup.mdc
 # ---------------------------------------------------------------------------
@@ -148,6 +152,49 @@ CELLS="${CELLS:-glm5mxfp4_mori glm5mxfp4_allgather glm5fp8_mori glm5fp8_allgathe
 # of these values, so decode ITL should not otherwise notice mnbt.
 # ITL tracking mnbt ~linearly confirms it; flat ITL kills it outright.
 MNBT_LIST="${MNBT_LIST:-1024}"
+
+# ANSWERED by 436340. mnbt 1024/512/256/128 -> ITL 307.03/171.06/82.45/60.69,
+# fit ITL = 20.1 + 0.2816*mnbt at R^2 = 0.996. The intercept IS the allgather
+# baseline (22.9 measured), and the slope -- 35.2 us per token-slot per rank --
+# predicts the EP ladder it was not fitted to: EP8 311 vs 306 measured, EP16
+# 602 vs 592. MoRI's cost is buffer capacity x ranks, not tokens moved.
+#
+# But mnbt moves TWO things, because vLLM feeds one scheduler value into both
+# the prefill chunk and MoRI's buffers (see apply_mori_capacity_clamp.py for
+# the full chain). MORI_CAP_LIST cuts the link: it overrides ONLY MoRI's
+# max_num_inp_token_per_rank and leaves mnbt alone. 0 = off (unpatched
+# behaviour), so "0 128 64" carries its own control.
+#
+# Predicted from the fit, at mnbt 1024: cap 128 -> ~56 ms, cap 64 -> ~38 ms.
+# Hitting those with mnbt held at 1024 proves capacity is causal and clears
+# prefill chunking; flat ITL means the sweep was really about chunk size.
+#
+# DIAGNOSTIC. MoRI drops tokens handed to it beyond its capacity, so a cap is
+# only valid while every forward stays under it. con=1 with isl=32 means 32
+# tokens per rank, so 64 is safe here and would NOT be at a 1024-token prefill
+# chunk. The product fix is a per-phase capacity, not a global clamp.
+MORI_CAP_LIST="${MORI_CAP_LIST:-0}"
+
+# Torch profiler. This is the attribution that MoRI's own profiler could not
+# give us -- 436312 showed ENABLE_PROFILER=1 GPU-faults at 0x2000001000 on
+# every rank, but torch/roctracer needs no instrumented MoRI build at all.
+#
+# The question it answers: at mnbt 1024 the dispatch() output is a view of
+# (max_num_tokens_to_recv(), hidden_dim) = 8192 x 4096, and prepare() hands
+# that padded buffer straight to rocm_aiter_fused_experts. So the capacity
+# cost could be MoRI's comm kernels OR the expert GEMM walking padded rows.
+# Both scale as mnbt x world_size, so only per-kernel times separate them:
+#   EpDispatchIntraNodeKernel* / EpCombineIntraNodeKernel* dominant -> MoRI
+#   moe_sorting / fused-MoE GEMM dominant                           -> vLLM
+#
+# v0.29 moved this off VLLM_TORCH_PROFILER_DIR onto --profiler-config; the env
+# var is gone and setting it does nothing. Profiling runs AFTER the measured
+# passes so it cannot contaminate the cell's ITL.
+TORCH_PROFILE="${TORCH_PROFILE:-0}"
+# Iterations are counted from /start_profile: 1 is the prefill, the rest are
+# decode steps. Skip past prefill, then keep the trace small enough to move.
+TORCH_PROFILE_DELAY="${TORCH_PROFILE_DELAY:-4}"
+TORCH_PROFILE_ITERS="${TORCH_PROFILE_ITERS:-8}"
 
 LOG_DIR="${LOG_DIR:-/shared_inference/${USER}/model_blog_logs/${SLURM_JOB_ID}}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -354,6 +401,10 @@ write_serve_script() {
         # with the combine patcher; both orders were tested against the
         # pristine v0290 file.
         echo "python3 ${COOKBOOK}/apply_mori_profiler_dump.py /usr/local/lib/python3.12/dist-packages/vllm"
+        # Applied unconditionally too: inert unless MORI_CAP_TOKENS is set to
+        # something lower than what vLLM computed, and it logs which it chose
+        # either way. Touches a different file from the other two patchers.
+        echo "python3 ${COOKBOOK}/apply_mori_capacity_clamp.py /usr/local/lib/python3.12/dist-packages/vllm"
         echo 'n=$(grep -c _original_topk_ids /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/prepare_finalize/mori.py || true)'
         echo 'echo "[combine-patch] _original_topk_ids occurrences=$n"'
         echo '[ "$n" -ge 3 ] || { echo "[combine-patch] FATAL: patch did not land"; exit 3; }'
@@ -367,34 +418,44 @@ write_serve_script() {
 run_cell() {
     local cell="$1"
     local mnbt="${2:-1024}"
+    local cap="${3:-0}"
     local a2a model_name model_path tag
     a2a="$(backend_for "$cell")"       || { echo "unknown backend in cell $cell" >&2; return 1; }
     model_name="$(model_for "$cell")"  || { echo "unknown model in cell $cell"   >&2; return 1; }
     model_path="$(resolve_model "$model_name")"
+    # Keep the uncapped tag exactly as it was so 436340's log names still match.
     tag="${cell}_mnbt${mnbt}"
+    [ "$cap" != 0 ] && tag="${tag}_cap${cap}"
 
     local bench_log="${LOG_DIR}/bench_${tag}.log"
     local boot="${LOG_DIR}/boot_${tag}.sh"
     CNAME="moeab-${SLURM_JOB_ID}-${tag}"
 
     PROFILE_ENV=""
+    if [ "$cap" != 0 ]; then
+        PROFILE_ENV="-e MORI_CAP_TOKENS=${cap}"
+        echo "[main] MoRI capacity capped at ${cap} tokens/rank (mnbt stays ${mnbt})"
+    fi
     if [ "$MORI_PROFILE" = 1 ]; then
         mkdir -p "${LOG_DIR}/traces_${tag}" 2>/dev/null || true
-        PROFILE_ENV="-e ENABLE_PROFILER=1 -e MORI_PROFILE_DIR=/run_logs/traces_${tag}"
+        # Append: MORI_CAP_TOKENS may already be in here.
+        PROFILE_ENV="$PROFILE_ENV -e ENABLE_PROFILER=1 -e MORI_PROFILE_DIR=/run_logs/traces_${tag}"
         PROFILE_ENV="$PROFILE_ENV -e MORI_PROFILE_AT=${MORI_PROFILE_AT}"
         PROFILE_ENV="$PROFILE_ENV -e MORI_PROFILE_RANKS=${MORI_PROFILE_RANKS}"
         echo "[main] MoRI profiler ON -> ${LOG_DIR}/traces_${tag} (cold JIT build, ~10 min)"
         echo "[main] NOTE: a profiled cell's ITL is not a measurement -- the dump stalls a step."
     fi
 
+    local row="${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | cap=${cap}"
+
     echo ""
     echo "############################################################"
-    echo "## CELL ${cell}  model=${model_name}  a2a=${a2a}  ep=${EP}  mnbt=${mnbt}"
+    echo "## CELL ${cell}  model=${model_name}  a2a=${a2a}  ep=${EP}  mnbt=${mnbt}  cap=${cap}"
     echo "############################################################"
 
     if [ ! -d "$model_path" ]; then
         echo "[main] ${cell} model path missing: $model_path"
-        echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | NO_MODEL | - | -" >> "$SUMMARY"
+        echo "${row} | NO_MODEL | - | -" >> "$SUMMARY"
         return 0
     fi
     echo "[main] model path: $model_path"
@@ -423,12 +484,27 @@ run_cell() {
         # off costs nothing here and removes a variable.
         --no-async-scheduling
     )
+    if [ "$TORCH_PROFILE" = 1 ]; then
+        mkdir -p "${LOG_DIR}/torchtrace_${tag}" 2>/dev/null || true
+        args+=(
+            --profiler-config.profiler=torch
+            "--profiler-config.torch_profiler_dir=/run_logs/torchtrace_${tag}"
+            # Stacks are the bulk of the trace and we only need kernel names
+            # and durations, so drop them. ignore_frontend is required by the
+            # docs whenever delay/limit are used: the AsyncLLM front end does
+            # not count iterations and would trace the entire range.
+            --profiler-config.torch_profiler_with_stack=false
+            --profiler-config.ignore_frontend=true
+            "--profiler-config.delay_iterations=${TORCH_PROFILE_DELAY}"
+            "--profiler-config.max_iterations=${TORCH_PROFILE_ITERS}"
+        )
+    fi
     mapfile -t -O "${#args[@]}" args < <(extra_args_for "$cell")
     write_serve_script "$boot" "${args[@]}"
     echo "[launch] $(tail -1 "$boot" | cut -c1-240)"
 
     if ! wait_for_gpus; then
-        echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | DIRTY_GPU | - | -" >> "$SUMMARY"
+        echo "${row} | DIRTY_GPU | - | -" >> "$SUMMARY"
         return 1
     fi
     on_node "docker rm -f $CNAME >/dev/null 2>&1 || true; \
@@ -466,7 +542,7 @@ run_cell() {
     if [ "$ready" != 1 ]; then
         echo "[main] ${cell} NEVER READY -- last 40 lines:"
         tail -40 "${LOG_DIR}/serve_${tag}.log"
-        echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | NOT_READY | - | -" >> "$SUMMARY"
+        echo "${row} | NOT_READY | - | -" >> "$SUMMARY"
         on_node "docker rm -f $CNAME >/dev/null 2>&1 || true"; CNAME=""
         sleep 25
         return 0
@@ -478,6 +554,14 @@ run_cell() {
     grep -o "EpCombineIntraNodeKernel_[a-z0-9_]*\|EpDispatchIntraNodeKernel_[a-z0-9_]*" \
         "${LOG_DIR}/serve_${tag}.log" | sort -u | head || true
     grep -m1 "Using MoriPrepareAndFinalize" "${LOG_DIR}/serve_${tag}.log" || true
+    # The capacity the op was BUILT with, not the one we asked for. Both the
+    # clamp's own line and the op config are printed, so a cap that silently
+    # failed to take cannot be mistaken for one that did.
+    grep -m1 "\[mori-cap\]" "${LOG_DIR}/serve_${tag}.log" || true
+    grep -o "max_num_inp_token_per_rank=[0-9]*" "${LOG_DIR}/serve_${tag}.log" | sort -u || true
+    if [ "$cap" != 0 ] && ! grep -q "max_num_inp_token_per_rank=${cap}\b" "${LOG_DIR}/serve_${tag}.log"; then
+        echo "[main] WARNING: cap=${cap} requested but the op config does not show it."
+    fi
     sleep 5
 
     {
@@ -519,10 +603,55 @@ run_cell() {
     ttft=$(awk '/Median TTFT/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
     [ "$itl" = "-" ] && status=NO_RESULT
     grep -q '^\[STALL\]' "$bench_log" && status=STALLED
-    echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
+    echo "${row} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
+
+    # AFTER the measured passes, so the trace cannot move the number above.
+    if [ "$TORCH_PROFILE" = 1 ] && [ "$status" != NO_RESULT ]; then
+        profile_pass "$tag" "$model_path"
+    fi
 
     on_node "docker rm -f $CNAME >/dev/null 2>&1 || true"; CNAME=""
     sleep 25
+}
+
+# ---------------------------------------------------------------------------
+# One profiled request, bracketed by /start_profile and /stop_profile.
+#
+# The engine counts iterations from the start call, so delay_iterations skips
+# the prefill and max_iterations bounds the trace. Output is one gzipped
+# Chrome trace per DP rank under torchtrace_<tag>/.
+#
+# Read it with: python3 -c on torch.profiler's own parser, or drop the json
+# into Perfetto. What matters is the top kernels by total CUDA time -- see
+# TORCH_PROFILE above for how that assigns blame.
+# ---------------------------------------------------------------------------
+profile_pass() {
+    local tag="$1" model_path="$2"
+    local tdir="${LOG_DIR}/torchtrace_${tag}"
+    echo "[profile] starting torch profiler (delay=${TORCH_PROFILE_DELAY} max=${TORCH_PROFILE_ITERS})"
+    if ! on_node "curl -sf -X POST http://127.0.0.1:${PORT}/start_profile >/dev/null"; then
+        echo "[profile] /start_profile failed -- skipping (is --profiler-config set?)"
+        return 0
+    fi
+    # One request, long enough that delay+max iterations all land in decode.
+    on_node "timeout 600 docker run --rm --network host \
+        -v /mnt:/mnt -v /shared_inference:/shared_inference \
+        -v ${LOG_DIR}:/run_logs \
+        $IMAGE \
+        vllm bench serve \
+            --model $model_path --backend vllm \
+            --host 127.0.0.1 --port $PORT \
+            --dataset-name random \
+            --random-input-len $ISL --random-output-len 32 \
+            --random-prefix-len 0 \
+            --num-prompts 1 --request-rate inf --ignore-eos \
+            --max-concurrency 1" > "${LOG_DIR}/profile_${tag}.log" 2>&1 || true
+    # Blocking: the workers flush their traces on stop, which takes a while.
+    on_node "curl -sf -X POST --max-time 900 http://127.0.0.1:${PORT}/stop_profile >/dev/null" \
+        || echo "[profile] /stop_profile returned non-zero (trace may still be complete)"
+    sleep 20
+    echo "[profile] traces in ${tdir}:"
+    ls -la "$tdir" 2>/dev/null | tail -12 || echo "[profile] NO TRACES WRITTEN"
 }
 
 if ! preflight; then
@@ -535,10 +664,13 @@ fi
 
 for cell in $CELLS; do
     for mnbt in $MNBT_LIST; do
-        # A node with leaked VRAM will fail every remaining cell identically,
-        # so give the allocation back instead of walking the same wall once
-        # per cell per mnbt value.
-        run_cell "$cell" "$mnbt" || { echo "[main] unusable node -- abandoning remaining cells"; break 2; }
+        for cap in $MORI_CAP_LIST; do
+            # A node with leaked VRAM will fail every remaining cell
+            # identically, so give the allocation back instead of walking the
+            # same wall once per cell per mnbt per cap.
+            run_cell "$cell" "$mnbt" "$cap" \
+                || { echo "[main] unusable node -- abandoning remaining cells"; break 3; }
+        done
     done
 done
 
@@ -552,6 +684,11 @@ echo "  mxfp4 slow, fp8 fast -> the MoRI fp4 dispatch/combine path owns it."
 echo "  both slow            -> MoRI+DP broken for every MoE model."
 echo "  both fast            -> not the quantization; and the DSA indexer is cleared."
 echo "Reference (DSV4-Flash MXFP4, EP8, 1 node, async off): mori 306.49 ms, allgather 22.9 ms."
+echo ""
+echo "Capacity cells (cap=N, mnbt held): fit ITL = 20.1 + 0.2816*capacity predicts"
+echo "  cap=1024 -> ~307 ms   cap=128 -> ~56 ms   cap=64 -> ~38 ms"
+echo "  Those landing -> capacity is causal, prefill chunk size is exonerated."
+echo "  Flat vs cap=0 -> the mnbt sweep was chunk size after all; re-open it."
 
 if [ "$HOLD" = 1 ]; then
     echo "[hold] HOLD=1 -- idling until scancel. Re-serve by hand from ${LOG_DIR}/boot_*.sh."
