@@ -71,10 +71,13 @@ NEW_INIT = """        self.use_fp8_dispatch = use_fp8_dispatch
         # what runs. all2all_utils.py sets quant_dtype to
         # quant_config.quant_dtype when use_fp8_dispatch, else to moe.in_dtype.
         # Log it once so cross-model comparisons can be checked, not assumed.
+        # Pre-render: logger.info_once() caches on its arguments, and
+        # EpDispatchCombineConfig is unhashable -- passing it as a %s arg
+        # raises TypeError: unhashable type at construction.
         logger.info_once(
-            "[mori-dispatch] use_fp8_dispatch=%s op_config=%s",
-            use_fp8_dispatch,
-            getattr(mori_op, "config", None),
+            "[mori-dispatch] use_fp8_dispatch={} op_config={}".format(
+                use_fp8_dispatch, getattr(mori_op, "config", None)
+            )
         )
         # MoRI kernel profiler readout -- see apply_mori_profiler_dump.py.
         # Unset MORI_PROFILE_DIR (the default) leaves this None and the only
