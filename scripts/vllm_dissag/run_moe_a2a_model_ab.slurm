@@ -74,7 +74,12 @@
 #   EP=4 sbatch run_moe_a2a_model_ab.slurm                        # narrower width
 #   HOLD=1 sbatch run_moe_a2a_model_ab.slurm                      # keep a live server
 #   MORI_PROFILE=1 CELLS=dsv4fls_mori sbatch run_moe_a2a_model_ab.slurm
-#                                     # per-phase kernel trace; ITL is void
+#                                     # per-phase kernel trace; ITL is void.
+#                                     # NOTE 436312: the ENABLE_PROFILER=1
+#                                     # build itself GPU-faults at
+#                                     # 0x2000001000 on every rank.
+#   CELLS=dsv4fls_mori MNBT_LIST="1024 512 256 128" sbatch run_moe_a2a_model_ab.slurm
+#                                     # the MoRI buffer-size sweep -- see MNBT_LIST
 #
 # Pickup: ~/.cursor/rules/dsv4-flash-itl-pickup.mdc
 # ---------------------------------------------------------------------------
@@ -124,6 +129,25 @@ MORI_PROFILE_RANKS="${MORI_PROFILE_RANKS:-0}"
 # The DSV4 cells are the known reference and are deliberately NOT in the
 # default list -- re-measuring 306 ms costs 20 minutes and buys nothing.
 CELLS="${CELLS:-glm5mxfp4_mori glm5mxfp4_allgather glm5fp8_mori glm5fp8_allgather}"
+
+# --max-num-batched-tokens, swept. Every cell in CELLS runs once per value.
+#
+# This is not a prefill knob here, it is the MoRI buffer knob. The
+# [mori-dispatch] line on 436312 showed the op is built with
+# max_num_inp_token_per_rank=1024 -- vLLM's MoriAll2AllManager passes
+# moe.max_num_tokens straight through, and that tracks mnbt. At con=1 decode
+# we hand MoRI exactly ONE token while its buffers are sized for 1024 per
+# rank across 8 ranks. If any dispatch/combine phase costs
+# O(max_num_inp_token_per_rank) rather than O(actual tokens), the useful work
+# is ~1/1024 of what the kernel walks, and the cost grows with world_size --
+# which fits BOTH the magnitude (~300 ms for a kilobyte payload) AND the
+# ~35 ms per EP rank ladder, neither of which bandwidth or a lane-parallel
+# peer loop can explain.
+#
+# Clean single variable at con=1 with isl=32: the prompt is one chunk at any
+# of these values, so decode ITL should not otherwise notice mnbt.
+# ITL tracking mnbt ~linearly confirms it; flat ITL kills it outright.
+MNBT_LIST="${MNBT_LIST:-1024}"
 
 LOG_DIR="${LOG_DIR:-/shared_inference/${USER}/model_blog_logs/${SLURM_JOB_ID}}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -342,33 +366,35 @@ write_serve_script() {
 
 run_cell() {
     local cell="$1"
-    local a2a model_name model_path
+    local mnbt="${2:-1024}"
+    local a2a model_name model_path tag
     a2a="$(backend_for "$cell")"       || { echo "unknown backend in cell $cell" >&2; return 1; }
     model_name="$(model_for "$cell")"  || { echo "unknown model in cell $cell"   >&2; return 1; }
     model_path="$(resolve_model "$model_name")"
+    tag="${cell}_mnbt${mnbt}"
 
-    local bench_log="${LOG_DIR}/bench_${cell}.log"
-    local boot="${LOG_DIR}/boot_${cell}.sh"
-    CNAME="moeab-${SLURM_JOB_ID}-${cell}"
+    local bench_log="${LOG_DIR}/bench_${tag}.log"
+    local boot="${LOG_DIR}/boot_${tag}.sh"
+    CNAME="moeab-${SLURM_JOB_ID}-${tag}"
 
     PROFILE_ENV=""
     if [ "$MORI_PROFILE" = 1 ]; then
-        mkdir -p "${LOG_DIR}/traces_${cell}" 2>/dev/null || true
-        PROFILE_ENV="-e ENABLE_PROFILER=1 -e MORI_PROFILE_DIR=/run_logs/traces_${cell}"
+        mkdir -p "${LOG_DIR}/traces_${tag}" 2>/dev/null || true
+        PROFILE_ENV="-e ENABLE_PROFILER=1 -e MORI_PROFILE_DIR=/run_logs/traces_${tag}"
         PROFILE_ENV="$PROFILE_ENV -e MORI_PROFILE_AT=${MORI_PROFILE_AT}"
         PROFILE_ENV="$PROFILE_ENV -e MORI_PROFILE_RANKS=${MORI_PROFILE_RANKS}"
-        echo "[main] MoRI profiler ON -> ${LOG_DIR}/traces_${cell} (cold JIT build, ~10 min)"
+        echo "[main] MoRI profiler ON -> ${LOG_DIR}/traces_${tag} (cold JIT build, ~10 min)"
         echo "[main] NOTE: a profiled cell's ITL is not a measurement -- the dump stalls a step."
     fi
 
     echo ""
     echo "############################################################"
-    echo "## CELL ${cell}  model=${model_name}  a2a=${a2a}  ep=${EP}"
+    echo "## CELL ${cell}  model=${model_name}  a2a=${a2a}  ep=${EP}  mnbt=${mnbt}"
     echo "############################################################"
 
     if [ ! -d "$model_path" ]; then
         echo "[main] ${cell} model path missing: $model_path"
-        echo "${cell} | ${model_name} | ${a2a} | NO_MODEL | - | -" >> "$SUMMARY"
+        echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | NO_MODEL | - | -" >> "$SUMMARY"
         return 0
     fi
     echo "[main] model path: $model_path"
@@ -387,7 +413,7 @@ run_cell() {
         --kv-cache-memory-bytes 20000000000
         --max-num-seqs "${MAX_NUM_SEQS:-4}"
         --max-model-len "${MAX_MODEL_LEN:-40960}"
-        --max-num-batched-tokens 1024
+        --max-num-batched-tokens "$mnbt"
         --no-enable-prefix-caching
         --distributed-timeout-seconds 7200
         --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","custom_ops":["+quant_fp8"]}'
@@ -402,7 +428,7 @@ run_cell() {
     echo "[launch] $(tail -1 "$boot" | cut -c1-240)"
 
     if ! wait_for_gpus; then
-        echo "${cell} | ${model_name} | ${a2a} | DIRTY_GPU | - | -" >> "$SUMMARY"
+        echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | DIRTY_GPU | - | -" >> "$SUMMARY"
         return 1
     fi
     on_node "docker rm -f $CNAME >/dev/null 2>&1 || true; \
@@ -435,12 +461,12 @@ run_cell() {
 
     # Redirect on THIS side: /run_logs exists only inside the container, so
     # `docker logs ... > /run_logs/...` in the remote shell silently fails.
-    on_node "docker logs $CNAME" > "${LOG_DIR}/serve_${cell}.log" 2>&1 || true
+    on_node "docker logs $CNAME" > "${LOG_DIR}/serve_${tag}.log" 2>&1 || true
 
     if [ "$ready" != 1 ]; then
         echo "[main] ${cell} NEVER READY -- last 40 lines:"
-        tail -40 "${LOG_DIR}/serve_${cell}.log"
-        echo "${cell} | ${model_name} | ${a2a} | NOT_READY | - | -" >> "$SUMMARY"
+        tail -40 "${LOG_DIR}/serve_${tag}.log"
+        echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | NOT_READY | - | -" >> "$SUMMARY"
         on_node "docker rm -f $CNAME >/dev/null 2>&1 || true"; CNAME=""
         sleep 25
         return 0
@@ -450,12 +476,12 @@ run_cell() {
     # comparison, so record it rather than assuming fp8 from the model name.
     echo "[main] MoRI kernels compiled for ${cell}:"
     grep -o "EpCombineIntraNodeKernel_[a-z0-9_]*\|EpDispatchIntraNodeKernel_[a-z0-9_]*" \
-        "${LOG_DIR}/serve_${cell}.log" | sort -u | head || true
-    grep -m1 "Using MoriPrepareAndFinalize" "${LOG_DIR}/serve_${cell}.log" || true
+        "${LOG_DIR}/serve_${tag}.log" | sort -u | head || true
+    grep -m1 "Using MoriPrepareAndFinalize" "${LOG_DIR}/serve_${tag}.log" || true
     sleep 5
 
     {
-        echo "===== ${cell} model=${model_name} a2a=${a2a} ep=${EP} isl=${ISL} osl=${OSL} ====="
+        echo "===== ${cell} model=${model_name} a2a=${a2a} ep=${EP} mnbt=${mnbt} isl=${ISL} osl=${OSL} ====="
         for con in warmup $CONS; do
             local c=$con n=16
             [ "$con" = warmup ] && c=1
@@ -493,7 +519,7 @@ run_cell() {
     ttft=$(awk '/Median TTFT/{v=$4} END{print (v==""?"-":v)}' "$bench_log")
     [ "$itl" = "-" ] && status=NO_RESULT
     grep -q '^\[STALL\]' "$bench_log" && status=STALLED
-    echo "${cell} | ${model_name} | ${a2a} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
+    echo "${cell} | ${model_name} | ${a2a} | mnbt=${mnbt} | ${status} | ITL=${itl} ms | TTFT=${ttft} ms" >> "$SUMMARY"
 
     on_node "docker rm -f $CNAME >/dev/null 2>&1 || true"; CNAME=""
     sleep 25
@@ -508,9 +534,12 @@ fi
 [ "$INSPECT" = 1 ] && inspect_image
 
 for cell in $CELLS; do
-    # A node with leaked VRAM will fail every remaining cell identically, so
-    # give the allocation back instead of walking the same wall four times.
-    run_cell "$cell" || { echo "[main] unusable node -- abandoning remaining cells"; break; }
+    for mnbt in $MNBT_LIST; do
+        # A node with leaked VRAM will fail every remaining cell identically,
+        # so give the allocation back instead of walking the same wall once
+        # per cell per mnbt value.
+        run_cell "$cell" "$mnbt" || { echo "[main] unusable node -- abandoning remaining cells"; break 2; }
+    done
 done
 
 echo ""
