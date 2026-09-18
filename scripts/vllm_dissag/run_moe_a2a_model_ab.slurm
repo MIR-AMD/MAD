@@ -345,13 +345,31 @@ EOF
 # docker run died in 2 s with exit 125 "no space left on device" (436056).
 # ---------------------------------------------------------------------------
 preflight() {
-    local free_gb
-    free_gb="$(on_node "df -BG --output=avail /var/lib 2>/dev/null | tail -1 | tr -dc 0-9" 2>/dev/null | tail -1)"
+    # Check the filesystem docker ACTUALLY writes to, which is not /var/lib.
+    # 436479 passed this check at "169 GB free" on 097-079 and then died in
+    # `docker run` with "no space left on device", because /var/lib/containerd
+    # is a symlink to /mnt/m2m_nobackup -- a 28T NVMe that was 100% full while
+    # /var/lib itself (/dev/sda1) had 169 GB. df on the parent directory
+    # resolves the wrong mount, so follow the symlink first.
+    local probe free_gb ifree
+    probe="$(on_node "readlink -f /var/lib/containerd 2>/dev/null || echo /var/lib" 2>/dev/null | tail -1)"
+    probe="${probe:-/var/lib}"
+    free_gb="$(on_node "df -BG --output=avail '${probe}' 2>/dev/null | tail -1 | tr -dc 0-9" 2>/dev/null | tail -1)"
     if [ -z "$free_gb" ] || [ "$free_gb" -lt "${MIN_DISK_GB:-20}" ]; then
-        echo "[preflight] FAIL ${NODE0}: /var/lib has ${free_gb:-?} GB free (< ${MIN_DISK_GB:-20})"
+        echo "[preflight] FAIL ${NODE0}: ${probe} has ${free_gb:-?} GB free (< ${MIN_DISK_GB:-20})"
+        echo "[preflight] Resubmit with --exclude=${NODE0}"
         return 1
     fi
-    echo "[preflight] ok ${NODE0}: /var/lib ${free_gb} GB free"
+    # Bytes are not enough. That same NVMe was at 100% INODES (1334 free of
+    # 35.6M), and an overlayfs snapshot is thousands of small files, so a
+    # byte-only check can wave through a node where docker still cannot start.
+    ifree="$(on_node "df -i --output=iavail '${probe}' 2>/dev/null | tail -1 | tr -dc 0-9" 2>/dev/null | tail -1)"
+    if [ -n "$ifree" ] && [ "$ifree" -lt "${MIN_DISK_INODES:-100000}" ]; then
+        echo "[preflight] FAIL ${NODE0}: ${probe} has ${ifree} inodes free (< ${MIN_DISK_INODES:-100000})"
+        echo "[preflight] Resubmit with --exclude=${NODE0}"
+        return 1
+    fi
+    echo "[preflight] ok ${NODE0}: ${probe} ${free_gb} GB / ${ifree:-?} inodes free"
 }
 
 # ---------------------------------------------------------------------------
@@ -394,7 +412,19 @@ wait_for_gpus() {
             [ "$i" -gt 1 ] && echo "[gpu-wait] drained after ~$((i * 30))s"
             return 0
         fi
-        [ "$i" = 1 ] && echo "[gpu-wait] emptiest GPU has ${free:-?} GiB free, need ${need}; waiting..."
+        # An EMPTY probe is not "busy", it is "the probe could not run", and
+        # waiting cannot fix that. 436479 spun here printing `? GiB free`
+        # because the node's container filesystem was full, so `docker run`
+        # failed for the probe exactly as it would for the server. Leaked VRAM
+        # drains; a broken docker does not.
+        if [ -z "$free" ]; then
+            echo "[gpu-wait] FAIL: GPU probe produced no number on ${NODE0}."
+            echo "[gpu-wait] docker run itself is failing -- not a busy GPU. Last docker error:"
+            on_node "docker run --rm --entrypoint /bin/true $IMAGE" 2>&1 | tail -3
+            echo "[gpu-wait] Resubmit with --exclude=${NODE0}"
+            return 1
+        fi
+        [ "$i" = 1 ] && echo "[gpu-wait] emptiest GPU has ${free} GiB free, need ${need}; waiting..."
         sleep 30
     done
     # Do not launch into it. One short DP rank does not fail fast: the other
