@@ -490,9 +490,14 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
         EXTRA_ENV+=(NIAH_TERSE="${NIAH_TERSE:-0}")
         EXTRA_ENV+=(NIAH_STOP_BLANK="${NIAH_STOP_BLANK:-0}")
         EXTRA_ENV+=(NIAH_MIN_TOKENS="${NIAH_MIN_TOKENS:-0}")
-        # Unset = byte-identical to 218778/224843. Empty still listed so the
-        # plan/EXTRA line cannot hide them (223837 NIAH_TERSE class).
-        EXTRA_ENV+=(NIAH_LIST_PRIME="${NIAH_LIST_PRIME:-}")
+        # Flash NIAH: prime the stem with "1." so token 1 is given, not sampled.
+        # Unprimed Flash answers `0` / `0 Animals found...` (433136, 436708).
+        # NIAH_LIST_PRIME=off restores the unprimed stem. A non-empty value wins.
+        case "${NIAH_LIST_PRIME:-}" in
+            off|OFF|0) NIAH_LIST_PRIME="" ;;
+            "") NIAH_LIST_PRIME="1." ;;
+        esac
+        EXTRA_ENV+=(NIAH_LIST_PRIME="${NIAH_LIST_PRIME}")
         EXTRA_ENV+=(NIAH_STOP="${NIAH_STOP:-}")
         EXTRA_ENV+=(NIAH_LOGPROBS="${NIAH_LOGPROBS:-0}")
     fi
@@ -585,7 +590,11 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
         EXTRA_ENV+=(NIAH_TERSE="${NIAH_TERSE:-0}")
         EXTRA_ENV+=(NIAH_STOP_BLANK="${NIAH_STOP_BLANK:-0}")
         EXTRA_ENV+=(NIAH_MIN_TOKENS="${NIAH_MIN_TOKENS:-0}")
-        EXTRA_ENV+=(NIAH_LIST_PRIME="${NIAH_LIST_PRIME:-}")
+        # Pro NIAH: never prime. It retrieves on the bare stem (225116: prime
+        # is a wash). Force empty so a leftover Flash `1.` from --export=ALL
+        # cannot leak into this cell.
+        NIAH_LIST_PRIME=""
+        EXTRA_ENV+=(NIAH_LIST_PRIME="${NIAH_LIST_PRIME}")
         EXTRA_ENV+=(NIAH_STOP="${NIAH_STOP:-}")
         EXTRA_ENV+=(NIAH_LOGPROBS="${NIAH_LOGPROBS:-0}")
     fi

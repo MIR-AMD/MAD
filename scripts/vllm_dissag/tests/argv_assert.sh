@@ -153,6 +153,8 @@ W="$(cat "$DIR/run_wideep_bench.sh")"
 _has "$W" 'DEFAULT_IMAGE="$IMG_V0280"' "wrapper DSV4 default image is v0280"
 _has "$W" 'DSV4_ENABLE_HMA="${DSV4_ENABLE_HMA:-0}"' "wrapper DSV4 product default is HMA=0"
 _has "$W" 'unset NIAH_LIST_PRIME' "wrapper mrcr unsets NIAH_LIST_PRIME"
+_has "$W" 'NIAH_LIST_PRIME="1."' "wrapper Flash NIAH defaults list-prime 1."
+_has "$W" 'Pro NIAH: never prime' "wrapper Pro NIAH forces the unprimed stem"
 _has "$W" 'BENCHMARK_SCRIPT=mrcr' "wrapper mrcr sets BENCHMARK_SCRIPT"
 _has "$W" 'BENCHMARK_SCRIPT=validate' "wrapper validate sets BENCHMARK_SCRIPT"
 
