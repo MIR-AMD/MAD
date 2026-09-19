@@ -55,9 +55,13 @@
 # 0.2.4; setup.py wants exactly 0.3.2. Do not drop the uninstall+assert.
 # 0.3.1 is the v0280 pin — too old for this AITER.
 #
-# Build on a REMOTE host (not WSL, not login useocpslog-002). Repo root:
+# Build on a REMOTE host (not WSL, not login useocpslog-002). Repo root.
+# --ulimit is required: cargo -j $nproc on a 100-core node hits EMFILE
+# (os error 24 / Too many open files) compiling wasmtime. CARGO_BUILD_JOBS=8
+# is the Dockerfile default; do not drop --ulimit (container hard nofile is 1024).
 #   docker pull vllm/vllm-openai-rocm:v0.29.0
-#   docker build -f docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile \
+#   docker build --ulimit nofile=1048576:1048576 \
+#     -f docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile \
 #     -t rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk .
 #   docker push rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk
 #
@@ -213,12 +217,15 @@ assert p.is_file(), p; print('moriio_connector.py OK', p)" && \
 #      crate v0.1.15
 #    Same binary 436879/436880 git-booted. rustc 1.88.0 required (time/home).
 #    PROXY_TYPE=vllm_router uses this; moriio_toy still the Python :10001 path.
+#    436919 cargo died EMFILE (os error 24): nproc-wide rustc on a compute node.
+#    Cap CARGO_BUILD_JOBS and raise nofile (see docker build --ulimit above).
 # -----------------------------------------------------------------------------
 ARG ROUTER_REPO=https://github.com/vllm-project/router.git
 ARG ROUTER_REF=f962dfcf26094530fbee37289784c37b2ca00ca6
 ARG ROUTER_HEAD_DATE=2026-09-18T01:30:59Z
 ARG ROUTER_CRATE=0.1.15
 ARG RUST_TOOLCHAIN=1.88.0
+ARG CARGO_BUILD_JOBS=8
 RUN if ! command -v cargo >/dev/null 2>&1; then \
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "${RUST_TOOLCHAIN}"; \
     fi && \
@@ -231,7 +238,9 @@ RUN if ! command -v cargo >/dev/null 2>&1; then \
     cd /tmp/vllm-router-src && git checkout "${ROUTER_REF}" && \
     test "$(git rev-parse HEAD)" = "${ROUTER_REF}" && \
     grep -q "version = \"${ROUTER_CRATE}\"" Cargo.toml && \
-    cargo build --release && \
+    ulimit -n 1048576 || ulimit -n 65536 || true && \
+    echo "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} nofile=$(ulimit -n)" && \
+    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --release -j "${CARGO_BUILD_JOBS}" && \
     install -m 755 target/release/vllm-router /usr/local/bin/vllm-router && \
     command -v vllm-router && \
     vllm-router --help 2>&1 | grep -q moriio && \
