@@ -157,6 +157,7 @@ _has "$W" 'NIAH_LIST_PRIME="1."' "wrapper Flash NIAH defaults list-prime 1."
 _has "$W" 'Pro NIAH: never prime' "wrapper Pro NIAH forces the unprimed stem"
 _has "$W" 'BENCHMARK_SCRIPT=mrcr' "wrapper mrcr sets BENCHMARK_SCRIPT"
 _has "$W" 'BENCHMARK_SCRIPT=validate' "wrapper validate sets BENCHMARK_SCRIPT"
+_hasnot "$W" 'ROUTER_BOOT_INSTALL="${ROUTER_BOOT_INSTALL:-git}"' "wrapper does not git-boot vllm-router (baked in v0290)"
 
 echo ""
 echo "=== moriio + wideEP (DeepSeek-V4-Flash-FP8) ==="

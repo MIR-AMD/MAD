@@ -26,9 +26,18 @@
 #   - MoRI  -> ROCm/mori main 07bdace2ff7306928871f85afd92f1d2aae13ad0 (2026-09-09)
 #              +24 over 6fcf6b3. Nearest tag v1.2.3 = 879983bdbd8c (+a few on main).
 #   - triton_kernels -> ROCm/triton @ 0f380657 (v0.29.0 Dockerfile.rocm, unchanged)
+#   - vllm-router -> vllm-project/router f962dfcf26094530fbee37289784c37b2ca00ca6
+#                    (2026-09-18T01:30:59Z, crate v0.1.15)
+#                    feat(tokenizer): add bounded L0 exact-match encode cache (#270)
+#                    Baked to /usr/local/bin/vllm-router. Do NOT git-boot at job
+#                    start. Validated git-boot: 436879 Pro EP16 smoke :30000 3/3
+#                    ITL 59-76 ms. rustc 1.88.0 (6b00bc388 2025-06-23).
 #   Image tag (do not retag):
 #     rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk
 #   Wrapper: --image v0290
+#   A digest of this tag built BEFORE the router layer has no binary; check
+#   /app/versions.txt for VLLM_ROUTER_REF=f962dfcf. Rebuild+push this file
+#   on a remote host (not WSL, not login).
 #
 # Hub v0.29.0 is STILL ROCm 7.2.3 (docker/Dockerfile.rocm_base
 # rocm/dev-ubuntu-22.04:7.2.3-complete). Hub AITER_BRANCH/MORI_BRANCH in
@@ -53,7 +62,8 @@
 #   docker push rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk
 #
 # Submit: --image v0290  (v0280 stays the in-flight validation default)
-# PROXY_TYPE=moriio_toy. First cell is curl smoke, then HMA=0 2k+8k vs v0280.
+# PROXY_TYPE=moriio_toy (Python :10001) or PROXY_TYPE=vllm_router (:30000).
+# Router is ON PATH after rebuild — leave ROUTER_BOOT_INSTALL unset.
 # Runtime patchers may WARN on v0.29.0 — check pd_vllm_bench_NODE*.log.
 # =============================================================================
 
@@ -195,9 +205,43 @@ assert p.is_file(), p; print('moriio_connector.py OK', p)" && \
     echo "Post-vLLM cross-check OK"
 
 # -----------------------------------------------------------------------------
-# 5. No vllm-router bake. Bring-up uses PROXY_TYPE=moriio_toy (Python).
+# 5. vllm-router baked in — /usr/local/bin/vllm-router, no NODE0 cargo.
+#    Pin (not `main`): vllm-project/router
+#      SHA  f962dfcf26094530fbee37289784c37b2ca00ca6
+#      date 2026-09-18T01:30:59Z
+#      msg  feat(tokenizer): add bounded L0 exact-match encode cache (#270)
+#      crate v0.1.15
+#    Same binary 436879/436880 git-booted. rustc 1.88.0 required (time/home).
+#    PROXY_TYPE=vllm_router uses this; moriio_toy still the Python :10001 path.
 # -----------------------------------------------------------------------------
-RUN echo "PROXY=moriio_toy (no vllm-router baked; Ravi fork is spec only)" >> /app/versions.txt
+ARG ROUTER_REPO=https://github.com/vllm-project/router.git
+ARG ROUTER_REF=f962dfcf26094530fbee37289784c37b2ca00ca6
+ARG ROUTER_HEAD_DATE=2026-09-18T01:30:59Z
+ARG ROUTER_CRATE=0.1.15
+ARG RUST_TOOLCHAIN=1.88.0
+RUN if ! command -v cargo >/dev/null 2>&1; then \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "${RUST_TOOLCHAIN}"; \
+    fi && \
+    export PATH="/root/.cargo/bin:${PATH}" && \
+    if command -v rustup >/dev/null 2>&1; then \
+        rustup default "${RUST_TOOLCHAIN}" >/dev/null 2>&1 || rustup toolchain install "${RUST_TOOLCHAIN}"; \
+    fi && \
+    rm -rf /tmp/vllm-router-src && \
+    git clone --filter=blob:none "${ROUTER_REPO}" /tmp/vllm-router-src && \
+    cd /tmp/vllm-router-src && git checkout "${ROUTER_REF}" && \
+    test "$(git rev-parse HEAD)" = "${ROUTER_REF}" && \
+    grep -q "version = \"${ROUTER_CRATE}\"" Cargo.toml && \
+    cargo build --release && \
+    install -m 755 target/release/vllm-router /usr/local/bin/vllm-router && \
+    command -v vllm-router && \
+    vllm-router --help 2>&1 | grep -q moriio && \
+    echo "VLLM_ROUTER_REPO=${ROUTER_REPO}" >> /app/versions.txt && \
+    echo "VLLM_ROUTER_REF=${ROUTER_REF}@$(git rev-parse HEAD)" >> /app/versions.txt && \
+    echo "VLLM_ROUTER_HEAD_DATE=$(git log -1 --format=%cI) (pin ${ROUTER_HEAD_DATE})" >> /app/versions.txt && \
+    echo "VLLM_ROUTER_CRATE=${ROUTER_CRATE}" >> /app/versions.txt && \
+    echo "VLLM_ROUTER_RUSTC=$(rustc --version)" >> /app/versions.txt && \
+    echo "PROXY=vllm-router baked @ ${ROUTER_REF} (moriio_toy still available)" >> /app/versions.txt && \
+    rm -rf /tmp/vllm-router-src
 
 ENV SKIP_RUNTIME_PATCH=1
 ENV AITER_JIT_DIR=/opt/vllm_cache/aiter_jit \

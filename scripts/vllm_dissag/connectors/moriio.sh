@@ -132,10 +132,9 @@ _moriio_build_kv_transfer_config() {
     echo '{"kv_connector":"MoRIIOConnector","kv_role":"'"${kv_role}"'","kv_port":"'"${KV_PORT}"'","kv_connector_extra_config":{'"${extra}"'}}'
 }
 
-# v0290 DSV4 images do not bake vllm-router. Boot-install on NODE0 only, in
-# the background so cargo overlaps engine load. Wait in connector_start_proxy.
-# Git+cargo is the real binary (same as GLM Dockerfile). pip is a PyPI wrapper
-# that can lag main and is not the WideEP-validated path.
+# v0290 bakes /usr/local/bin/vllm-router (f962dfc, 2026-09-18). ROUTER_BOOT_INSTALL
+# is an override for an old digest or a newer SHA. Unset = use the image binary.
+# Git+cargo still overlaps engine load when the override is set. pip lags main.
 _ROUTER_BOOT_PID=""
 _router_boot_log() {
     echo "/run_logs/${SLURM_JOB_ID}/vllm_router_install_NODE${NODE_RANK}.log"

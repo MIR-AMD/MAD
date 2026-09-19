@@ -21,8 +21,9 @@
   #   NIAH_WORDS=2000,8000,16000 NIAH_SEEDS=0,0,0 NIAH_LIST_PRIME='1.' \\
   #   NIAH_STOP='11.|```|<｜end▁of▁file｜>|<｜begin▁of▁file▁name｜>' NIAH_LOGPROBS=5 \\
   #   ./run_wideep_bench.sh niah dsv4fls 2p2d --image v0280 --time 06:00:00
-  # vllm-router (v0290 has no bake): git clone + cargo at NODE0 boot, not pip.
-  #   QOS=low PROXY_TYPE=vllm_router ROUTER_BOOT_INSTALL=git \\
+  # vllm-router is baked in v0290 (f962dfc 2026-09-18). Leave ROUTER_BOOT_INSTALL
+  # unset. Override git only on a digest whose /app/versions.txt lacks VLLM_ROUTER_REF.
+  #   QOS=low PROXY_TYPE=vllm_router \\
   #   NIAH_METHOD=product NIAH_MAXTOK=64 NIAH_SEEDS=0,0,0 NIAH_LIST_PRIME='1.' \\
   #   ./run_wideep_bench.sh niah dsv4fls 2p2d --image v0290 --time 04:00:00 --after JOBID
 #
@@ -628,13 +629,14 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-
     # stop syncing. A violation skips the trim rather than dropping tokens, so
     # the worst case is stock latency, not a wrong answer.
     [[ -n "${MORI_TRIM_CHECK:-}" ]] && EXTRA_ENV+=(MORI_TRIM_CHECK="$MORI_TRIM_CHECK")
-    # v0290/v0280 do not bake vllm-router. Git+cargo at NODE0 boot (GLM
-    # Dockerfile path). pip is ROUTER_BOOT_INSTALL=pip — not "latest main".
+    # v0290 bakes /usr/local/bin/vllm-router (f962dfc). Do not default
+    # ROUTER_BOOT_INSTALL=git — that re-clones main at every NODE0 boot.
+    # Forward only when the operator overrides (old digest, or a newer SHA).
     if [[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]]; then
-        EXTRA_ENV+=(ROUTER_BOOT_INSTALL="${ROUTER_BOOT_INSTALL:-git}")
-        EXTRA_ENV+=(ROUTER_REPO="${ROUTER_REPO:-https://github.com/vllm-project/router.git}")
-        EXTRA_ENV+=(ROUTER_REF="${ROUTER_REF:-main}")
-        EXTRA_ENV+=(RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.88.0}")
+        [[ -n "${ROUTER_BOOT_INSTALL:-}" ]] && EXTRA_ENV+=(ROUTER_BOOT_INSTALL="$ROUTER_BOOT_INSTALL")
+        [[ -n "${ROUTER_REPO:-}" ]] && EXTRA_ENV+=(ROUTER_REPO="$ROUTER_REPO")
+        [[ -n "${ROUTER_REF:-}" ]] && EXTRA_ENV+=(ROUTER_REF="$ROUTER_REF")
+        [[ -n "${RUST_TOOLCHAIN:-}" ]] && EXTRA_ENV+=(RUST_TOOLCHAIN="$RUST_TOOLCHAIN")
     fi
 fi
 
@@ -689,7 +691,7 @@ echo "PROXY_TYPE=${PROXY_TYPE:-moriio_toy}  PROXY_ROUTE_DP=$PROXY_ROUTE_DP  SKIP
 # `yaml` means unset at submit time, so models.yaml decides. Printed because a
 # trim cell and a stock cell differ only by this and by ~280 ms of ITL.
 echo "MORI_TRIM=${MORI_TRIM_DISPATCH:-yaml}  TRIM_CHECK=${MORI_TRIM_CHECK:-yaml}"
-[[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]] && echo "ROUTER_BOOT=${ROUTER_BOOT_INSTALL:-}  REPO=${ROUTER_REPO:-}  REF=${ROUTER_REF:-}"
+[[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]] && echo "ROUTER_BOOT=${ROUTER_BOOT_INSTALL:-baked}  REPO=${ROUTER_REPO:-image}  REF=${ROUTER_REF:-f962dfcf}"
 echo "TIME=$TIME_ARG"
 [[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"
 [[ "$BENCH" == "niah" || "$BENCH" == "validate" ]] && echo "NIAH_METHOD=${NIAH_METHOD:-}  NIAH_WORDS=$NIAH_WORDS  NIAH_SEEDS=$NIAH_SEEDS  HALT=$NIAH_HALT_ON_FAIL  MAXTOK=${NIAH_MAXTOK:-}  WARMUP=${NIAH_WARMUP:-}  TIMEOUT=${NIAH_TIMEOUT:-}  WRAP=0  TERSE=${NIAH_TERSE:-0}  STOP_BLANK=${NIAH_STOP_BLANK:-0}  MINTOK=${NIAH_MIN_TOKENS:-0}  PRIME=${NIAH_LIST_PRIME:-}  STOP=${NIAH_STOP:-}  LOGPROBS=${NIAH_LOGPROBS:-0}"
