@@ -34,10 +34,9 @@
 #                    ITL 59-76 ms. rustc 1.88.0 (6b00bc388 2025-06-23).
 #   Image tag (do not retag):
 #     rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk
-#   Wrapper: --image v0290
-#   A digest of this tag built BEFORE the router layer has no binary; check
-#   /app/versions.txt for VLLM_ROUTER_REF=f962dfcf. Rebuild+push this file
-#   on a remote host (not WSL, not login).
+#     Hub digest sha256:bb1104fa6c66a9393db8620d9ed9a6a67c48e362f4be08b7087c71c215d6bf8d
+#     (router-baked rebuild pushed 2026-09-19 from 097-014). Wrapper: --image v0290
+#     /app/versions.txt must have VLLM_ROUTER_REF=f962dfcf. Leave ROUTER_BOOT_INSTALL unset.
 #
 # Hub v0.29.0 is STILL ROCm 7.2.3 (docker/Dockerfile.rocm_base
 # rocm/dev-ubuntu-22.04:7.2.3-complete). Hub AITER_BRANCH/MORI_BRANCH in
@@ -74,7 +73,8 @@
 ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.29.0
 FROM ${BASE_IMAGE}
 
-ENTRYPOINT []
+# Keep the Hub ENTRYPOINT. Jobs start with docker --entrypoint /bin/bash
+# then vllm_disagg.sh (connector env + patchers; rank 0 proxy/router, others vllm serve).
 WORKDIR /app
 
 ARG GFX_COMPILATION_ARCH="gfx942"

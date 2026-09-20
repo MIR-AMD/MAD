@@ -123,7 +123,7 @@ connector_setup_env() {
 
 _moriio_build_kv_transfer_config() {
     local kv_role="$1"
-    # DSV4: 5a4c/v0280 ignore VLLM_MORIIO_QP_PER_TRANSFER env; extra_config is the path.
+    # DSV4: some image builds ignore VLLM_MORIIO_QP_PER_TRANSFER env; extra_config is the path.
     # GLM / DSV3 stay on the original extra_config (their images still honor the env).
     local extra='"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"'"${PROXY_PORT}"'","proxy_ping_port":"'"${PROXY_PING_PORT}"'","http_port":"'"${SERVE_PORT}"'","local_ping_port":"'"${LOCAL_PING_PORT}"'","handshake_port":"'"${HANDSHAKE_PORT}"'","notify_port":"'"${NOTIFY_PORT}"'"'
     if [ "${MODEL_NAME:-}" = "DeepSeek-V4-Flash-FP8" ] || [ "${MODEL_NAME:-}" = "DeepSeek-V4-Pro-FP8" ]; then

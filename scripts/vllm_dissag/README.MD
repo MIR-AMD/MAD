@@ -54,8 +54,8 @@ path).
 | `DeepSeek-V3` | MoE | 3, 4 (wideEP only) | validated serving (moriio+MoRI-EP) |
 | `DeepSeek-V3-5layer` | MoE | 3, 4 (wideEP only) | smoke/dev variant |
 | `DeepSeek-R1` | MoE | 3, 4 (wideEP only) | needs a co-versioned AITER image (see Caveats) |
-| `DeepSeek-V4-Flash-FP8` | MoE | 3 (moriio wideEP) | v0.28.0 image; MoRI-EP only |
-| `DeepSeek-V4-Pro-FP8` | MoE | 3 (moriio wideEP) | v0.28.0 image; MoRI-EP only |
+| `DeepSeek-V4-Flash-FP8` | MoE | 3 (moriio wideEP) | own image (`dsv4.v0290` Dockerfile); MoRI-EP only; submit via `run_wideep_bench.sh` |
+| `DeepSeek-V4-Pro-FP8` | MoE | 3 (moriio wideEP) | own image (`dsv4.v0290` Dockerfile); MoRI-EP only; submit via `run_wideep_bench.sh` |
 | `GLM-5.1-FP8` | MoE + DSA | 3 (moriio wideEP only) | own image (`glmv5.1` Dockerfile); 2P/2D EP16 and 4P/4D EP32 validated on the current pins (NIAH ~93-97%) |
 
 ## Prerequisites
@@ -97,17 +97,52 @@ so every GLM DSA fix has to be in-source in that image. Add a
 `vllm_disagg_inference.<model>.ubuntu.amd.Dockerfile` per future model that needs its
 own pins rather than repinning the shared one.
 
-`DeepSeek-V4-Flash-FP8` / `DeepSeek-V4-Pro-FP8` keep two per-model images (same
-naming as `vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile`). Pins live in
-each Dockerfile header, not the filename:
+`DeepSeek-V4-Flash-FP8` / `DeepSeek-V4-Pro-FP8` need their own image for the same
+reason GLM does — their vLLM/AITER/MoRI pins differ from the shared Dockerfile —
+and follow the same per-model naming:
 
-- `--image v0280` — `docker/vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile`
-- `--image v0290` — `docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile`
+```bash
+docker build -t <your-registry>/vllm-disagg:dsv4-v0290 \
+  -f docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile .
+```
 
-Do not docker-build on login or WSL. Submit with `./run_wideep_bench.sh` and
-**always pass `--image`**. Do not mix v0290 scores with v0280. Hub
-`vllm/vllm-openai-rocm:v0.29.0` is still ROCm 7.2.3; do not install UFB
-`+rocm10.1.0a` AITER wheels on it.
+Exact pins live in that Dockerfile's header, not in the filename: vLLM release
+v0.29.0, AITER and MoRI from source, `flydsl==0.3.2`, and `vllm-router` baked at
+`/usr/local/bin/vllm-router` (so leave `ROUTER_BOOT_INSTALL` unset). Like the GLM
+image it defaults to `WITH_NIXL=0` — DSV4 runs MoRI-EP only. The Hub base is still
+ROCm 7.2.3, so do **not** install UFB `+rocm10.1.0a` AITER wheels on it.
+
+Do not build on a login node or under WSL; build on a compute host and push to a
+registry the cluster can pull from.
+
+### Launching DSV4 jobs
+
+DSV4 submits through `./run_wideep_bench.sh <bench> <model> <topology>`, which
+derives every dependent knob from those three arguments. The image above is the
+default for both DSV4 models, so `--image` is only needed to override it:
+
+```bash
+cd MAD/scripts/vllm_dissag
+
+# curl + NIAH ladder + concurrency sweep in one allocation (the usual first run)
+./run_wideep_bench.sh validate dsv4fls ep16
+
+# a single bench
+./run_wideep_bench.sh niah  dsv4pro 2p2d
+./run_wideep_bench.sh smoke dsv4fls 1p1d
+
+# print the sbatch line without submitting
+./run_wideep_bench.sh validate dsv4fls ep32 --dry-run
+```
+
+`dsv4fls` / `dsv4pro` are shorthand for the two `MODEL_NAME` values; topology is
+`xPyD` (`2p2d`) or an EP width (`ep16`, `ep32`). Useful flags: `--time HH:MM:SS`,
+`--exclude <nodelist>`, `--after JOBID` to queue behind a running job, and
+`QOS=low` where the partition requires it.
+
+Prompt defaults are handled per model and should not be set by hand — the Flash
+NIAH branch primes the answer stem (`NIAH_LIST_PRIME=1.`) and the Pro branch runs
+unprimed. The MoRI dispatch trim is on by default; `MORI_TRIM_DISPATCH=0` opts out.
 
 Then `export DOCKER_IMAGE_NAME=<tag>` (or a published image) before submitting. The slurm
 `docker pull`s the image on every node, so a local-only tag must be pushed to a registry the nodes

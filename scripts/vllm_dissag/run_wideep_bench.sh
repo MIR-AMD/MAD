@@ -8,8 +8,8 @@
 #   ./run_wideep_bench.sh niah hy3 3p3d
 #   ./run_wideep_bench.sh niah glm52 4p4d
 #   ./run_wideep_bench.sh niah dsv3 4p4d --image e03
-#   ./run_wideep_bench.sh smoke dsv4fls 1p1d --image v0280
-#   ./run_wideep_bench.sh smoke dsv4pro 1p1d --image v0280
+#   ./run_wideep_bench.sh smoke dsv4fls 1p1d --image v0290
+#   ./run_wideep_bench.sh smoke dsv4pro 1p1d --image v0290
 #   ./run_wideep_bench.sh validate dsv4fls ep16 --image v0290
 #   ./run_wideep_bench.sh validate dsv4pro ep32 --image v0290
 #   ./run_wideep_bench.sh niah glm 4p4d --dry-run
@@ -20,7 +20,7 @@
   #   DSV4_ENABLE_HMA=0 NIAH_METHOD=product NIAH_MAXTOK=512 \\
   #   NIAH_WORDS=2000,8000,16000 NIAH_SEEDS=0,0,0 NIAH_LIST_PRIME='1.' \\
   #   NIAH_STOP='11.|```|<｜end▁of▁file｜>|<｜begin▁of▁file▁name｜>' NIAH_LOGPROBS=5 \\
-  #   ./run_wideep_bench.sh niah dsv4fls 2p2d --image v0280 --time 06:00:00
+  #   ./run_wideep_bench.sh niah dsv4fls 2p2d --image v0290 --time 06:00:00
   # vllm-router is baked in v0290 (f962dfc 2026-09-18). Leave ROUTER_BOOT_INSTALL
   # unset. Override git only on a digest whose /app/versions.txt lacks VLLM_ROUTER_REF.
   #   QOS=low PROXY_TYPE=vllm_router \\
@@ -47,16 +47,10 @@ IMG_D626FD="rocm/pytorch-private:vllm-recent-source-basem-d626108b-aiter-1d872fa
 IMG_MORI624="rocm/pytorch-private:vllm-recent-source-basem-d626108b-aiter-1d872fa-fd031-mori624002-tk"
 # vLLM release v0.28.0 (2cf0a691) + MoRI main 6fcf6b3 (2026-08-26, +12 over
 # 624002c8). AITER/flydsl/triton_kernels identical to mori624002, so a diff vs
-# mori624002 is vLLM-or-MoRI and cannot be attributed further: the tie-breaker
-# image (d626108b + 6fcf6b3) is written but SHELVED, build it only if this
-# regresses. v0.28.0 is 13 ahead / 150 BEHIND d626108b -- reproducible release,
-# not a newer vLLM.
-IMG_V0280="rocm/pytorch-private:vllm-recent-source-basem-v0280-aiter-1d872fa-fd031-mori6fcf6b3-tk"
 # vLLM release v0.29.0 (98dff2a) + AITER main 10f8874 + MoRI main 07bdace.
-# Dockerfile: docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile
-# (v0280 is docker/vllm_disagg_inference.dsv4.v0280.ubuntu.amd.Dockerfile).
-# Do not mix scores. Hub base is still ROCm 7.2.3 — AITER is source-built,
-# not the UFB +rocm10.1.0a wheel.
+# Dockerfile: docker/vllm_disagg_inference.dsv4.v0290.ubuntu.amd.Dockerfile.
+# This is the DSV4 vehicle and the default for both DSV4 models. Hub base is
+# still ROCm 7.2.3 — AITER is source-built, not the UFB +rocm10.1.0a wheel.
 IMG_V0290="rocm/pytorch-private:vllm-recent-source-basem-v0290-aiter-10f8874-mori07bdace-tk"
 IMG_026="rocm/pytorch-private:vllm-recent-source-basem-20260815"
 
@@ -77,15 +71,12 @@ Usage: ./run_wideep_bench.sh BENCH MODEL TOPO [flags]
 
 Flags:
   --dry-run              print sbatch, do not submit
-  --image e03|e03tk|5a4c|d626|d626fd|mori624002|v0280|v0290|026|<tag>
+  --image e03|e03tk|5a4c|d626|d626fd|mori624002|v0290|026|<tag>
                          image (default: glm*→e03, dsv4fls/dsv4pro→mori624002, dsv3/hy3→026)
                          mori624002 = DSV4 vehicle. Hub d626108b + AITER 1d872fa + flydsl==0.3.1
                                   + MoRI 624002c8 + gRPC/UMBP.
-                         v0280  = vLLM release v0.28.0 + MoRI 6fcf6b3. Same AITER/flydsl/tk as
-                                  mori624002, so a delta is vLLM-or-MoRI, not attributable further.
-                                  Unproven: smoke it, then HMA=0 2k+8k vs 218778 before any claim.
                          v0290  = vLLM v0.29.0 + AITER main 10f8874 + MoRI 07bdace. Own Dockerfile.
-                                  Hub base still ROCm 7.2.3. flydsl==0.3.2. Do not mix with v0280.
+                                  Hub base still ROCm 7.2.3. flydsl==0.3.2. DSV4 default.
                          d626fd = same vLLM/AITER/flydsl, older MoRI cfe7ed38, no UMBP. Closed.
                          d626   = alias of d626fd. Poison …-1d872fa-tk (flydsl 0.1.8) is 217850.
                          5a4c   = Hub 5a4c8d99 + AITER e03 + triton_kernels wheel. Not DSV4 HMA.
@@ -329,7 +320,7 @@ MORI_PROXY_PING_PORT="${MORI_PROXY_PING_PORT:-36367}"
 
 # --- IMAGE ---
 case "$MODEL_NAME" in
-    DeepSeek-V4-Flash-FP8|DeepSeek-V4-Pro-FP8) DEFAULT_IMAGE="$IMG_V0280"; IMG_TAG=v0280 ;;
+    DeepSeek-V4-Flash-FP8|DeepSeek-V4-Pro-FP8) DEFAULT_IMAGE="$IMG_V0290"; IMG_TAG=v0290 ;;
     GLM-*) DEFAULT_IMAGE="$IMG_E03"; IMG_TAG=e03 ;;
     *)     DEFAULT_IMAGE="$IMG_026"; IMG_TAG=026 ;;
 esac
@@ -339,7 +330,6 @@ case "${IMAGE_ARG}" in
     e03tk|e03-tk) DOCKER_IMAGE_NAME="$IMG_E03_TK"; IMG_TAG=e03tk ;;
     5a4c|5a4c8d99) DOCKER_IMAGE_NAME="$IMG_5A4C"; IMG_TAG=5a4c ;;
     mori624002|mori624|624002c8) DOCKER_IMAGE_NAME="$IMG_MORI624"; IMG_TAG=mori624 ;;
-    v0280|v028|v0.28.0|mori6fcf|6fcf6b3) DOCKER_IMAGE_NAME="$IMG_V0280"; IMG_TAG=v0280 ;;
     v0290|v029|v0.29.0|10f8874|mori07bdace) DOCKER_IMAGE_NAME="$IMG_V0290"; IMG_TAG=v0290 ;;
     d626fd|fd031|d626|d626108b|1d872fa) DOCKER_IMAGE_NAME="$IMG_D626FD"; IMG_TAG=d626 ;;
     026|20260815) DOCKER_IMAGE_NAME="$IMG_026"; IMG_TAG=026 ;;
@@ -349,13 +339,11 @@ esac
 # (empty --image + DOCKER_IMAGE_NAME=..., or a full registry tag). Check
 # d626 / 5a4c8d99 before e03fa6040 / *-tk so hybrid tags are not e03/e03tk.
 if [[ -z "$IMAGE_ARG" || "$IMG_TAG" == "custom" ]]; then
-    # v0280 / mori624002 first: both tags also contain fd031 / 1d872fa (and the
+    # mori624002 first: that tag also contains fd031 / 1d872fa (and the
     # mori624002 one contains d626108b), so the d626 arm below would swallow
     # them and hide the vLLM / MoRI bump in JOB_NAME.
     if [[ "$DOCKER_IMAGE_NAME" == *v0290* || "$DOCKER_IMAGE_NAME" == *mori07bdace* || "$DOCKER_IMAGE_NAME" == *10f8874* ]]; then
         IMG_TAG=v0290
-    elif [[ "$DOCKER_IMAGE_NAME" == *v0280* || "$DOCKER_IMAGE_NAME" == *mori6fcf6b3* ]]; then
-        IMG_TAG=v0280
     elif [[ "$DOCKER_IMAGE_NAME" == *mori624002* ]]; then
         IMG_TAG=mori624
     elif [[ "$DOCKER_IMAGE_NAME" == *fd031* || "$DOCKER_IMAGE_NAME" == *d626108b* || "$DOCKER_IMAGE_NAME" == *1d872fa* ]]; then
@@ -551,7 +539,7 @@ if [[ "${HOLD_AFTER_READY:-0}" == "1" ]]; then
     EXTRA_ENV+=(HOLD_AFTER_READY=1)
 fi
 
-# v0280/v0290 bake ENV SKIP_RUNTIME_PATCH=1 (image-build skip). That leaks into
+# v0290 bakes ENV SKIP_RUNTIME_PATCH=1 (image-build skip). That leaks into
 # serve and skips Wei combine original-topk (339189: 8192 vs 1024). Force 0
 # into docker -e; unset would keep the image ENV.
 if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" || "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then

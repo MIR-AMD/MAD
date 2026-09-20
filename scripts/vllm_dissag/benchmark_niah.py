@@ -70,7 +70,13 @@ WORDS = [int(x) for x in os.environ.get("NIAH_WORDS", "2000,8000,20000,35000").s
 #
 # The haystack is byte-identical in all three modes (make_haystack md5 matches
 # PR-176 at 2k/8k/16k/35k), so the method changes the ask, never the exam.
-METHOD = os.environ.get("NIAH_METHOD", "hybrid").strip().lower()
+# Default is `product`, the bare continuation, because it is the only mode that
+# is model-agnostic: `hybrid`/`pr176` render the DeepSeek chat template here
+# (the MoRIIO router needs /v1/completions, so the server cannot apply it), and
+# those `<｜User｜>` / `<｜Assistant｜>` tokens are literal text to a non-DeepSeek
+# tokenizer. The DSV4 wrapper sets NIAH_METHOD explicitly, so it never relies on
+# this default; every other model gets a prompt its own tokenizer understands.
+METHOD = os.environ.get("NIAH_METHOD", "product").strip().lower()
 if METHOD not in ("hybrid", "pr176", "product"):
     print("NIAH_METHOD must be hybrid, pr176 or product (got %r)" % METHOD,
           file=sys.stderr)

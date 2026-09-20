@@ -195,7 +195,7 @@ _has "$S" '${ROUTER_BOOT_INSTALL:+-e ROUTER_BOOT_INSTALL=' "slurm forwards ROUTE
 _has "$S" '${ROUTER_REPO:+-e ROUTER_REPO=' "slurm forwards ROUTER_REPO"
 _has "$S" '${ROUTER_REF:+-e ROUTER_REF=' "slurm forwards ROUTER_REF"
 W="$(cat "$DIR/run_wideep_bench.sh")"
-_has "$W" 'DEFAULT_IMAGE="$IMG_V0280"' "wrapper DSV4 default image is v0280"
+_has "$W" 'DEFAULT_IMAGE="$IMG_V0290"' "wrapper DSV4 default image is v0290"
 _has "$W" 'DSV4_ENABLE_HMA="${DSV4_ENABLE_HMA:-0}"' "wrapper DSV4 product default is HMA=0"
 _has "$W" 'unset NIAH_LIST_PRIME' "wrapper mrcr unsets NIAH_LIST_PRIME"
 _has "$W" 'NIAH_LIST_PRIME="1."' "wrapper Flash NIAH defaults list-prime 1."
@@ -214,6 +214,21 @@ _has    "$C" "--block-size" "DSV4 has --block-size"
 _has    "$C" "256" "DSV4 block-size 256 present"
 _count  "$C" "--compilation-config" 1 "DSV4 exactly one --compilation-config"
 _hasnot "$C" "--tensor-parallel-size" "DSV4 no --tensor-parallel-size (uses -tp 1)"
+
+echo ""
+echo "=== shared NIAH path keeps develop's behaviour for non-DSV4 models ==="
+# These four defaults are never read on a DSV4 run (the wrapper sets NIAH_METHOD
+# and NIAH_MAXTOK explicitly in both model blocks), so they exist purely to leave
+# GLM / DSV3 / Hy3 on the behaviour they had before this branch.
+NSH="$(cat "${DIR}/benchmark_niah.sh")"
+NPY="$(cat "${DIR}/benchmark_niah.py")"
+_has "$NPY" 'os.environ.get("NIAH_METHOD", "product")' "niah.py defaults to the model-agnostic product stem"
+_has "$NSH" 'NIAH_MAXTOK="${NIAH_MAXTOK:-2048}"' "niah.sh keeps develop's 2048 answer budget"
+_has "$NSH" '/v1/models' "niah.sh falls back to the /v1/models readiness probe"
+_has "$NSH" 'WARN: neither /ready' "niah.sh readiness failure is non-fatal"
+_has "$NSH" 'parse_to_csv.py' "niah.sh still emits madengine perf.csv rows"
+_has "$W" 'NIAH_METHOD="${NIAH_METHOD:-hybrid}"' "wrapper sets DSV4 method explicitly"
+_has "$W" 'NIAH_MAXTOK="${NIAH_MAXTOK:-512}"' "wrapper sets DSV4 maxtok explicitly"
 
 echo ""
 echo "======================================================"
