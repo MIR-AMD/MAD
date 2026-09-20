@@ -140,35 +140,6 @@ def patch_connector(path: str) -> int:
                 _n_idx,
                 _n_skip,
             )
-            # #region agent log
-            try:
-                import json as _dj, os as _do, time as _dt
-                _rec = {
-                    "sessionId": "8b20ac",
-                    "hypothesisId": "A",
-                    "location": "moriio_connector.wait_for_save",
-                    "message": "dsv4 wait_for_save layer split",
-                    "data": {"mla": _n_mla, "indexer": _n_idx, "skipped": _n_skip},
-                    "timestamp": int(_dt.time() * 1000),
-                    "runId": _do.environ.get("SLURM_JOB_ID", ""),
-                }
-                _jid = _do.environ.get("SLURM_JOB_ID", "")
-                for _p in (
-                    "/home/basem/.cursor/debug-8b20ac.log",
-                    (("/run_logs/%s/debug-8b20ac.ndjson" % _jid) if _jid else ""),
-                ):
-                    if not _p:
-                        continue
-                    try:
-                        _d = _do.path.dirname(_p)
-                        if _d:
-                            _do.makedirs(_d, exist_ok=True)
-                        open(_p, "a").write(_dj.dumps(_rec) + "\\n")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            # #endregion
             if _n_skip:
                 logger.info(
                     "[dsv4-gate] wait_for_save skipped %d non-transfer layers",

@@ -138,6 +138,36 @@ PY
 )"
 _has "$_TRIM" "DeepSeek-V4-Flash-FP8=0" "models.yaml: Flash trim default is OFF"
 _has "$_TRIM" "DeepSeek-V4-Pro-FP8=0"   "models.yaml: Pro trim default is OFF"
+
+# The container-side init section. models.yaml is loaded INSIDE the container by
+# vllm_disagg.sh with a bare `import yaml`, twice, and it resolves both the
+# per-model env block and the per-role serve flags -- so PyYAML is a critical
+# dependency of the serve path, not a reporting nicety. Images are a moving
+# target, so the init step must keep covering it. pandas is the reporting half
+# (benchmark_parser.py, the only ITL/TTFT/TPOT reporter).
+echo ""
+echo "=== container init ensures the python deps the serve path imports ==="
+V="$(cat "$DIR/vllm_disagg.sh")"
+_has "$V" "Initialization — container-side boot setup" "vllm_disagg has an init section"
+_has "$V" "_ensure_py_deps" "init defines the dep check"
+_has "$V" "_init_container_env" "init has an umbrella hook for future steps"
+_has "$V" 'PY_BOOT_DEPS-yaml:PyYAML pandas' "init default covers BOTH PyYAML and pandas"
+_has "$V" "import os, yaml, shlex" "models.yaml is still parsed with a bare import yaml"
+_has "$V" 'PyYAML absent' "a failed PyYAML install says the serve path is affected"
+_has "$V" 'pandas absent is harmless' "a failed pandas install says reporting only"
+# Nothing in init may abort: a compute node can be offline from PyPI, and no
+# reporting library is worth losing a multi-hour serving cell.
+_INIT="$(python3 - "$DIR/vllm_disagg.sh" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+m = re.search(r'^_ensure_py_deps\(\) \{.*?^\}', s, re.S | re.M)
+body = m.group(0) if m else ""
+print("FOUND" if body else "MISSING",
+      "ABORTS" if re.search(r'\b(exit 1|exit 2)\b', body) else "NONFATAL")
+PY
+)"
+_has "$_INIT" "FOUND NONFATAL" "init dep step is non-fatal (no exit on failure)"
+
 _has "$S" '${NIAH_HALT_ON_FAIL:+-e NIAH_HALT_ON_FAIL=' "slurm forwards NIAH_HALT_ON_FAIL"
 _has "$S" '${NIAH_LIST_PRIME:+-e NIAH_LIST_PRIME=' "slurm forwards NIAH_LIST_PRIME"
 _has "$S" '${MRCR_NEEDLES:+-e MRCR_NEEDLES=' "slurm forwards MRCR_NEEDLES"

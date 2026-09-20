@@ -31,6 +31,79 @@
 SCRIPT_DIR="${NIXL_COOKBOOK_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
 
 # =============================================================================
+# Initialization — container-side boot setup
+# =============================================================================
+# Runs first, before any axis or connector work. Everything here must be
+# idempotent (a node can re-enter this script) and NON-FATAL: nothing in this
+# section is worth losing a multi-hour serving cell over. Add future one-time
+# container setup here rather than inline further down.
+#
+# The image is a moving target -- pins change under us and a package present
+# today can be absent in the next nightly -- so these steps ask the environment
+# what it actually has instead of encoding a fact about any one tag.
+
+# Python deps this script and its tooling import. Entries are
+# `module[:pip-spec]`, space separated, for when the import name differs from
+# the pip name. `PY_BOOT_DEPS=off` (or `0`/`none`) skips the step. When nothing
+# is missing it prints one line and installs nothing -- the expected path.
+#
+#   yaml   CRITICAL. The models.yaml parse below does a bare `import yaml`,
+#          twice, with no fallback, and it resolves both the per-model env
+#          block and the per-role serve flags. Today's images ship PyYAML so
+#          this has never fired, but if one stops shipping it the serve path
+#          dies at the model catalog -- not somewhere obvious.
+#   pandas  Reporting only. `benchmark_parser.py` is the sole tool that reports
+#          ITL/TTFT/TPOT, and it falls back to a stdlib table without pandas.
+#          `parse_to_csv.py` -- the one the job calls to write CONCURRENCY.csv
+#          and perf.csv -- is stdlib-only.
+#
+# Non-fatal even for yaml: a compute node may have no route to PyPI, and if
+# yaml really is absent the existing bare import fails loudly a few lines
+# down. This step only gives it a chance to self-heal, and the WARN is the
+# diagnosis for that failure.
+_ensure_py_deps() {
+    local spec="${PY_BOOT_DEPS-yaml:PyYAML pandas}"
+    case "${spec}" in ""|off|OFF|0|none) return 0 ;; esac
+
+    local missing=() entry mod pkg
+    for entry in ${spec}; do
+        mod="${entry%%:*}"
+        pkg="${entry#*:}"; [[ "$pkg" == "$entry" ]] && pkg="$mod"
+        if ! python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('${mod}') else 1)" 2>/dev/null; then
+            missing+=("$pkg")
+        fi
+    done
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        echo "[py-deps] present: ${spec}"
+        return 0
+    fi
+
+    echo "[py-deps] installing missing: ${missing[*]}"
+    # --break-system-packages first: newer base images ship a PEP 668 managed
+    # interpreter, where a plain install refuses with externally-managed-environment.
+    if pip install --quiet --break-system-packages "${missing[@]}" 2>/dev/null \
+       || pip install --quiet "${missing[@]}" 2>/dev/null; then
+        echo "[py-deps] installed: ${missing[*]}"
+    else
+        # Say which kind of failure this is. "serving is unaffected" is true for
+        # pandas and false for PyYAML, so do not print one blanket reassurance.
+        echo "[py-deps] WARN install failed: ${missing[*]}" >&2
+        case " ${missing[*]} " in *" PyYAML "*)
+            echo "[py-deps] WARN PyYAML absent — the models.yaml parse below will fail, so per-model env and serve flags will NOT be applied" >&2 ;;
+        esac
+        case " ${missing[*]} " in *" pandas "*)
+            echo "[py-deps] pandas absent is harmless — benchmark_parser.py falls back to a stdlib table, and parse_to_csv.py is stdlib-only" >&2 ;;
+        esac
+    fi
+}
+
+_init_container_env() {
+    _ensure_py_deps
+}
+_init_container_env
+
+# =============================================================================
 # Axis selection (+ legacy shim) and validation
 # =============================================================================
 # Legacy flags map to the new axes when CONNECTOR is not explicitly set.
