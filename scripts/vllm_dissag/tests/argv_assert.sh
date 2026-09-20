@@ -145,8 +145,17 @@ _has "$_TRIM" "DeepSeek-V4-Pro-FP8=0"   "models.yaml: Pro trim default is OFF"
 # target, so the init step must keep covering it. pandas is the reporting half
 # (benchmark_parser.py, the only ITL/TTFT/TPOT reporter).
 echo ""
-echo "=== container init ensures the python deps the serve path imports ==="
+echo "=== container creation barrier is bounded (437656) ==="
+B="$(cat "$DIR/socket_barrier.py")"
 V="$(cat "$DIR/vllm_disagg.sh")"
+_has "$B" '"--timeout"' "barrier accepts a deadline"
+_has "$B" 'never opened their port' "barrier names the peers that never showed"
+_has "$B" 'default=0' "barrier default stays wait-forever for the other callers"
+_has "$V" 'CONTAINER_BARRIER_TIMEOUT_SECONDS:-1800' "launcher bounds the barrier"
+_has "$V" 'container creation barrier failed' "launcher aborts when the barrier times out"
+
+echo ""
+echo "=== container init ensures the python deps the serve path imports ==="
 _has "$V" "Initialization — container-side boot setup" "vllm_disagg has an init section"
 _has "$V" "_ensure_py_deps" "init defines the dep check"
 _has "$V" "_init_container_env" "init has an umbrella hook for future steps"

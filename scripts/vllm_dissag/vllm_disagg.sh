@@ -302,10 +302,20 @@ if [[ "${DRY_RUN:-0}" != "1" ]]; then
         kill -9 "$_pid" 2>/dev/null
     done
     sleep 2
+    # Bounded: a node that never launches its container cannot open the port,
+    # and an unbounded barrier turns that into a silent hold on every node
+    # until walltime (437656). Timing out names the missing peers and fails
+    # the job in minutes. Generous by default -- a cold node still has to load
+    # a ~50 GiB image before it reaches this line.
+    _BARRIER_TIMEOUT="${CONTAINER_BARRIER_TIMEOUT_SECONDS:-1800}"
     echo "Waiting at the container creation barrier on $host_name"
-    python $NIXL_COOKBOOK_PATH/socket_barrier.py \
+    if ! python $NIXL_COOKBOOK_PATH/socket_barrier.py \
         --local-ip ${host_ip} --local-port ${_BARRIER_PORT} --enable-port \
-        --node-ips ${IPADDRS} --node-ports ${_BARRIER_PORT}
+        --node-ips ${IPADDRS} --node-ports ${_BARRIER_PORT} \
+        --timeout "${_BARRIER_TIMEOUT}"; then
+        echo "Error: container creation barrier failed on $host_name after ${_BARRIER_TIMEOUT}s." >&2
+        exit 1
+    fi
     connector_runtime_patch
 fi
 

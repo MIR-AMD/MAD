@@ -10,6 +10,11 @@ parser.add_argument("--local-port", type=int, required=False, help="Port number 
 parser.add_argument("--enable-port", action="store_true", help="Enable opening and closing of local port.")
 parser.add_argument("--node-ips", required=True, help="Comma-separated list of node IPs.")
 parser.add_argument("--node-ports", required=True, help="Comma-separated list of ports to check.")
+parser.add_argument("--timeout", type=float, default=0,
+                    help="Give up after N seconds and exit 1, naming the peers that never "
+                         "opened. Default 0 waits forever (the historical behaviour).")
+parser.add_argument("--report-every", type=float, default=60,
+                    help="Seconds between listing the peers still missing.")
 args = parser.parse_args()
 
 # Parse node IPs and ports from command-line arguments
@@ -32,12 +37,32 @@ def is_port_open(ip, port):
         return s.connect_ex((ip, port)) == 0
 
 def wait_for_all_ports():
-    """Wait until all nodes have opened the specified ports."""
+    """Wait until all nodes have opened the specified ports.
+
+    A node whose container never starts cannot open its port, so without a
+    deadline one dead node holds the whole allocation until walltime with no
+    indication of which node it was (437656: NODE4 never launched, the other
+    seven printed "Waiting for nodes. . ." until cancelled). --timeout turns
+    that into a fast, named failure.
+    """
+    start = time.monotonic()
+    last_report = 0.0
     while True:
-        all_open = all(is_port_open(ip, port) for ip, port in zip(NODE_IPS, NODE_PORTS))
-        if all_open:
-            break
+        missing = [f"{ip}:{port}" for ip, port in zip(NODE_IPS, NODE_PORTS)
+                   if not is_port_open(ip, port)]
+        if not missing:
+            return
         print("Waiting for nodes. . .", flush=True)
+        waited = time.monotonic() - start
+        if waited - last_report >= args.report_every:
+            last_report = waited
+            print(f"  still waiting after {waited:.0f}s on {len(missing)}/"
+                  f"{len(NODE_IPS)}: {', '.join(missing)}", flush=True)
+        if args.timeout and waited >= args.timeout:
+            print(f"Error: barrier timed out after {waited:.0f}s. "
+                  f"{len(missing)}/{len(NODE_IPS)} peers never opened their port: "
+                  f"{', '.join(missing)}", flush=True)
+            exit(1)
         time.sleep(5)
 
 def open_port():
