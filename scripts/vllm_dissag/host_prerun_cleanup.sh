@@ -7,21 +7,37 @@
 #
 # This is the host (fuser exists). The vLLM image has neither ss nor fuser.
 #
-# Exclusive Slurm nodes only (--exclusive). Same leftover pattern as
-# run_xPyD_models.slurm's teardown `docker ps -q | xargs docker stop`. Restrict
-# the kill to host-network containers: those are the ones that pin 10001/36367
-# after scancel. Bridge-network sidecars on the node are left alone.
+# Docker kill is name-filtered to this stack's leftovers, not every container
+# on the node:
+#   container_${MODEL}_${JOBID}   run_xPyD_models.slurm
+#   dsv4coloc-*                   run_dsv4_colocated_tp8.slurm
+#   dsv4ep16-*                    run_dsv4_ep16_a2a.slurm
+#   dsv4sweep-* / dsv4hold-*      run_dsv4_tp_ep_sweep.slurm
+# Unrelated host-net sidecars are left alone. fuser still frees our listen
+# ports if an unnamed leftover is holding one.
 set -u
 
 echo "[prerun-cleanup] $(hostname) begin"
 
-_ids=$(docker ps --filter network=host -q 2>/dev/null || true)
-if [[ -n "${_ids}" ]]; then
-    echo "[prerun-cleanup] docker kill host-net ${_ids}"
-    # kill, not stop: cancelled jobs leave host-net listeners until SIGKILL.
-    docker kill ${_ids} 2>/dev/null || true
-    docker rm -f ${_ids} 2>/dev/null || true
-fi
+_ours() {
+    case "$1" in
+        container_*|dsv4coloc-*|dsv4ep16-*|dsv4sweep-*|dsv4hold-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# docker ps --filter name= is a substring match; walk names ourselves so a
+# container named "my_container_backup" is not collateral.
+while read -r _id _name; do
+    [[ -z "${_id}" ]] && continue
+    if _ours "${_name}"; then
+        echo "[prerun-cleanup] docker kill ${_name} (${_id})"
+        # kill, not stop: cancelled jobs leave host-net listeners until SIGKILL.
+        docker kill "${_id}" 2>/dev/null || true
+        docker rm -f "${_id}" 2>/dev/null || true
+    fi
+done < <(docker ps -a --format '{{.ID}} {{.Names}}' 2>/dev/null || true)
+
 if [[ -n "${DOCKER_CONT_NAME:-}" ]]; then
     docker rm -f "${DOCKER_CONT_NAME}" 2>/dev/null || true
 fi
