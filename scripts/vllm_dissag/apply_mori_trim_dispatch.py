@@ -91,12 +91,10 @@ SAFETY
                          capturing, where syncing is illegal.
 
 Anchors the dispatch call site and `def prepare(`, neither of which
-apply_mori_combine_original_topk_fix.py (__init__, the
-apply_router_weight_on_input assert, the combine call),
-apply_mori_profiler_dump.py (import, __init__, finalize) or
-apply_mori_shape_probe.py (__init__, ExpertTokensMetadata, finalize) touches,
-so this composes with all three in any order. `os` and the forward-context
-import are function-local for the same reason.
+apply_mori_combine_original_topk_fix.py touches (__init__, the
+apply_router_weight_on_input assert, the combine call), so the two compose in
+either order against the same file. `os` and the forward-context import are
+function-local for the same reason.
 
 Idempotent. Missing file -> skip. Found-old that fails to apply is a hard
 error.

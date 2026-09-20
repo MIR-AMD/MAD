@@ -102,7 +102,6 @@ _has "$(cat "$SLURM")" '${USE_INDUCTOR_GRAPH_PARTITION:+-e USE_INDUCTOR_GRAPH_PA
 echo ""
 echo "=== slurm forwards DSV4 MoRI-EP / NIAH knobs ==="
 _has "$S" '${DSV4_EAGER:+-e DSV4_EAGER=' "slurm forwards DSV4_EAGER"
-_has "$S" '${DSV4_DECODE_TIMER:+-e DSV4_DECODE_TIMER=' "slurm forwards DSV4_DECODE_TIMER"
 _has "$(cat "$DIR/connectors/moriio.sh")" "[dsv4-patch-roster]" "moriio dumps patch roster"
 _has "$(cat "$DIR/connectors/moriio.sh")" "_dsv4_mixed_block_size_fix" "HMA=0 mixed-bs is called on product PD"
 _has "$(cat "$DIR/connectors/moriio.sh")" "_dsv4_attn_transfer_fix" "HMA=0 attn-xfer is called on product PD"

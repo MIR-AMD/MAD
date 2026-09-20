@@ -236,7 +236,7 @@ _dsv4_patch_note() {
 
 _dsv4_patch_roster_dump() {
     echo "[dsv4-patch-roster] TP8_DELTA: colocated TP8 applied NONE of these (Median ITL 18ms)."
-    echo "[dsv4-patch-roster] decode_hot combine=${DSV4_PATCH_COMBINE:-NOT_CALLED} trim=${DSV4_PATCH_TRIM:-NOT_CALLED} attn_backend=${DSV4_PATCH_ATTN_BACKEND:-NOT_CALLED} timer=${DSV4_PATCH_TIMER:-NOT_CALLED} eager=${DSV4_EAGER:-0} transfer_attn=${DSV4_TRANSFER_ATTN:-0} hma=${DSV4_ENABLE_HMA:-0}"
+    echo "[dsv4-patch-roster] decode_hot combine=${DSV4_PATCH_COMBINE:-NOT_CALLED} trim=${DSV4_PATCH_TRIM:-NOT_CALLED} attn_backend=${DSV4_PATCH_ATTN_BACKEND:-NOT_CALLED} eager=${DSV4_EAGER:-0} transfer_attn=${DSV4_TRANSFER_ATTN:-0} hma=${DSV4_ENABLE_HMA:-0}"
     echo "[dsv4-patch-roster] write_boot storage=${DSV4_PATCH_STORAGE:-NOT_CALLED} mixed_bs=${DSV4_PATCH_MIXED_BS:-NOT_CALLED} gate=${DSV4_PATCH_GATE:-NOT_CALLED} attn_xfer=${DSV4_PATCH_ATTN_XFER:-NOT_CALLED} rdma_wait=${DSV4_PATCH_RDMA_WAIT:-NOT_CALLED}"
     echo "[dsv4-patch-roster] read: combine+attn_backend are ITL suspects (every decode step / kernel pick). write_boot is TTFT/WRITE. Timer: moe_combine vs mla vs indexer vs other. DSV4_EAGER=1 required or graph capture hides buckets."
 }
@@ -254,7 +254,6 @@ connector_runtime_patch() {
         _dsv4_patch_note COMBINE SKIPPED decode_hot
         _dsv4_patch_note TRIM SKIPPED decode_hot
         _dsv4_patch_note ATTN_BACKEND SKIPPED decode_hot
-        _dsv4_patch_note TIMER SKIPPED profile
         _dsv4_patch_roster_dump
         return 0
     fi
@@ -282,7 +281,6 @@ connector_runtime_patch() {
     _dsv4_transfer_gate_fix
     _dsv4_attn_transfer_fix
     _dsv4_rdma_wait_fix
-    _dsv4_decode_step_timer
     _dsv4_patch_roster_dump
 }
 
@@ -376,157 +374,10 @@ _dsv4_moriio_attn_backend_fix() {
     _dsv4_patch_note ATTN_BACKEND APPLIED decode_hot
 }
 
-# Decode ITL split (434150 ~600 ms/tok). Default off. Prefer DSV4_EAGER=1
-# so MLA/MoE wraps are not hidden inside FULL_DECODE_ONLY replay.
-_dsv4_decode_step_timer() {
-    if [ "${DSV4_DECODE_TIMER:-0}" != "1" ]; then
-        echo "[dsv4-timer] DSV4_DECODE_TIMER=${DSV4_DECODE_TIMER:-0}: no step timer"
-        _dsv4_patch_note TIMER SKIPPED profile
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_dsv4_decode_step_timer.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-timer] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-timer] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-timer] DSV4_DECODE_TIMER=1 applying ${_py} against ${_vllm_dir}"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-timer] patch failed. Aborting." >&2
-        exit 1
-    }
-    _dsv4_patch_note TIMER APPLIED profile
-}
 
-# DSV4 indexer k_cache is block 64, MLA is 256 (217463). Skip-register was
-# the boot workaround; 217981/217952 then NIAH'd with a cold Lightning
-# Indexer. Default off. =1 restores skip (do not mix with gate indexer WRITE).
-# GLM indexer_transfer H2 is the wrong tool here (same MLA block_ids).
-_dsv4_skip_indexer_register() {
-    if [ "${DSV4_SKIP_INDEXER_REGISTER:-0}" != "1" ]; then
-        echo "[dsv4-idx] DSV4_SKIP_INDEXER_REGISTER=${DSV4_SKIP_INDEXER_REGISTER:-0}: keeping .indexer. in RDMA register (217981 skipped 42 / NIAH 0/10)"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_glm_dsa_skip_indexer_register_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-idx-skip] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-idx-skip] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-idx-skip] DSV4_SKIP_INDEXER_REGISTER=1 applying ${_py} against ${_vllm_dir}"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-idx-skip] patch failed — Flash PD would die on indexer 64 != MLA 256. Aborting." >&2
-        exit 1
-    }
-}
 
-# DSV4 Flash: SupportsHMA + per-group block ids so hybrid KV stays on
-# (217665 ~4s/tok with HMA off). Runs after mixed-bs + gate; rewrites
-# wait_for_save to include block-64 .attn. Do not skip-swa in the same cell.
-_dsv4_supports_hma_fix() {
-    if [ "${DSV4_ENABLE_HMA:-1}" = "0" ]; then
-        echo "[dsv4-hma] skipped DSV4_ENABLE_HMA=0 (217666 path; 217748 HMA-on ASCII)"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_supports_hma_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-hma] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-hma] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-hma] applying ${_py} against ${_vllm_dir}"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-hma] patch failed — Flash would keep HMA off (~4s/tok). Aborting." >&2
-        exit 1
-    }
-}
 
-# DSV4: vllm-project/vllm#48989 relabels the compressed group-0 MLA page instead
-# of folding it. 218042's fold divided dim[0] by kbpb (4x even, 128x odd), which
-# shrank the page table until no remote id resolved — fold-ok on all 41 layers
-# and n_remote=0 on every write. Runs AFTER the HMA patcher, whose fold it
-# overrides. Runtime flag DSV4_HMA_UPSTREAM_GEOM (default 0 = 218042 fold).
-_dsv4_hma_upstream_geom_fix() {
-    # HMA-off has no fold to override, and DSV4_TRANSFER_ATTN already relabels.
-    if [ "${DSV4_ENABLE_HMA:-1}" = "0" ]; then
-        echo "[dsv4-hma-geom] skipped DSV4_ENABLE_HMA=0 (no fold; DSV4_TRANSFER_ATTN arm)"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_hma_upstream_geom_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-hma-geom] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-hma-geom] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-hma-geom] applying ${_py} against ${_vllm_dir} (DSV4_HMA_UPSTREAM_GEOM=${DSV4_HMA_UPSTREAM_GEOM:-0} CLIP_PAGE=${DSV4_HMA_CLIP_PAGE:-0} NATIVE_ATTN=${DSV4_HMA_NATIVE_ATTN:-0})"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-hma-geom] patch failed — both HMA arms would be the 218042 fold. Aborting." >&2
-        exit 1
-    }
-}
 
-# DSV4: region_len = num_blocks * regions_per_block * block_len, but offsets step
-# block_stride regardless, so a per-page block_len registers ~38x less than the
-# addressing reaches — silently, since the connector's ValueError guards
-# block_size, not block_len. That was 218257's garbage decode. Floor the extent at
-# num_blocks * block_stride * element_size. DSV4_REGION_LEN_SPAN (default 0).
-# Pairs with DSV4_HMA_PAGE_BLOCK_LEN=1; that flag alone reproduces 218257, so
-# refuse the combination outright.
-_dsv4_region_len_span_fix() {
-    if [ "${DSV4_HMA_PAGE_BLOCK_LEN:-0}" = "1" ] && [ "${DSV4_REGION_LEN_SPAN:-0}" != "1" ]; then
-        echo "Error: [dsv4-region] DSV4_HMA_PAGE_BLOCK_LEN=1 without DSV4_REGION_LEN_SPAN=1 is the 218257 garbage cell. Aborting." >&2
-        exit 1
-    fi
-    if [ "${DSV4_HMA_NATIVE_ATTN:-0}" = "1" ] && [ "${DSV4_REGION_LEN_SPAN:-0}" != "1" ]; then
-        echo "Error: [dsv4-region] DSV4_HMA_NATIVE_ATTN=1 without DSV4_REGION_LEN_SPAN=1 under-registers .attn (218257). Aborting." >&2
-        exit 1
-    fi
-    if [ "${DSV4_REGION_LEN_SPAN:-0}" != "1" ]; then
-        echo "[dsv4-region] DSV4_REGION_LEN_SPAN=${DSV4_REGION_LEN_SPAN:-0}: keeping the shipped region_len"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_region_len_span_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-region] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-region] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-region] applying ${_py} against ${_vllm_dir} (DSV4_REGION_LEN_SPAN=1 PAGE_BLOCK_LEN=${DSV4_HMA_PAGE_BLOCK_LEN:-0})"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-region] patch failed — a per-page block_len would under-register. Aborting." >&2
-        exit 1
-    }
-}
 
 # DSV4 Flash: KV views are non-contiguous (217514). 217532 skip-all left 0
 # caches (StopIteration). Register a data_ptr-aligned storage span; no .contiguous().
@@ -634,32 +485,6 @@ _dsv4_attn_transfer_fix() {
     _dsv4_patch_note ATTN_XFER APPLIED write_boot
 }
 
-# 218328 20-token cliff: last-chunk used len(groups)*smallest_page. 218687
-# reproduced it with the patcher retired (curl 17 tok wrote, 2k never did).
-# Apply under HMA=1; env default 1.
-_dsv4_chunked_prefill_hma_fix() {
-    if [ "${DSV4_ENABLE_HMA:-1}" = "0" ]; then
-        echo "[dsv4-chunk-hma] skipped: DSV4_ENABLE_HMA=0 (block ids are flat)"
-        return 0
-    fi
-    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-    local _py="${_patch_dir}/apply_moriio_dsv4_chunked_prefill_hma_fix.py"
-    if [ ! -f "${_py}" ]; then
-        echo "Error: [dsv4-chunk-hma] ${_py} not found. Aborting." >&2
-        exit 1
-    fi
-    local _vllm_dir
-    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
-    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
-        echo "Error: [dsv4-chunk-hma] cannot locate vLLM install dir. Aborting." >&2
-        exit 1
-    fi
-    echo "[dsv4-chunk-hma] applying ${_py} against ${_vllm_dir} (DSV4_CHUNK_HMA_FIX=${DSV4_CHUNK_HMA_FIX:-1})"
-    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
-        echo "Error: [dsv4-chunk-hma] patch failed — 2k would stay on the 20-token cliff. Aborting." >&2
-        exit 1
-    }
-}
 
 # DSV4 Flash: 217557. writes_done=84 then ~391s CQE wait on WRITE 2+.
 # 5a4c already waits outside the lock; log elapsed + time Succeeded().
