@@ -600,6 +600,15 @@ def run(n_words, seed=0):
     return (len(found), len(decoys), bool(s["junk"]))
 
 
+def no_scored_answers(results):
+    """True iff no seed of any length produced an answer (timeout/error/skip).
+
+    A scored 0/10 is still a result. An all-NO-RESULT ladder is a harness
+    failure, which validate used to report as niah=0.
+    """
+    return not any(v is not None for scored in results.values() for v in scored)
+
+
 def main():
     if not MODEL:
         print("NIAH_MODEL must be set (the served model path/name)", file=sys.stderr)
@@ -747,6 +756,10 @@ def main():
         print("  words=%6d  mean=%.1f/10  min=%d  max=%d  decoys=%.1f  %s  (n=%d)%s"
               % (n, mean, min(hits), max(hits), mean_dec, tag, len(hits), extra),
               flush=True)
+    if no_scored_answers(results):
+        print("=== NIAH FAILED: every request was timeout/error/skip "
+              "(no scored answer) ===", flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

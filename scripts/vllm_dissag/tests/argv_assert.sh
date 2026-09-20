@@ -229,6 +229,7 @@ _has "$NSH" 'NIAH_MAXTOK="${NIAH_MAXTOK:-2048}"' "niah.sh keeps develop's 2048 a
 _has "$NSH" '/v1/models' "niah.sh falls back to the /v1/models readiness probe"
 _has "$NSH" 'WARN: neither /ready' "niah.sh readiness failure is non-fatal"
 _has "$NSH" 'parse_to_csv.py' "niah.sh still emits madengine perf.csv rows"
+_has "$NPY" 'no scored answer' "niah.py exits 1 when every request is NO-RESULT"
 _has "$W" 'NIAH_METHOD="${NIAH_METHOD:-hybrid}"' "wrapper sets DSV4 method explicitly"
 _has "$W" 'NIAH_MAXTOK="${NIAH_MAXTOK:-512}"' "wrapper sets DSV4 maxtok explicitly"
 

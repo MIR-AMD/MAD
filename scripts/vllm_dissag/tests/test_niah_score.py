@@ -138,6 +138,14 @@ def main():
     s = score_answer("")
     _check("empty: r@10 is 0.00", abs(s["r_at_k"] - 0.0) < 1e-9)
 
+    import benchmark_niah as _niah
+    _check("all None is a failed ladder",
+           _niah.no_scored_answers({2000: [None, None], 8000: [None]}))
+    _check("a 0/10 score is not a failed ladder",
+           not _niah.no_scored_answers({2000: [(0, 0, False)]}))
+    _check("mixed score+timeout is not a failed ladder",
+           not _niah.no_scored_answers({2000: [(10, 0, False)], 8000: [None]}))
+
     print("all passed")
     return 0
 
