@@ -101,24 +101,20 @@ def parse_prompt_field(raw):
     raise TypeError("prompt must be JSON str or list, got %s" % type(raw).__name__)
 
 
-def row_n_tokens(row, messages=None):
-    """Prefer a dataset column; else tiktoken o200k; else a warned char heuristic."""
-    for key in ("n_tokens", "total_tokens", "tokens", "n_token"):
-        if key in row and row[key] is not None and str(row[key]).strip() != "":
-            try:
-                return int(row[key])
-            except (TypeError, ValueError):
-                pass
-    msgs = messages if messages is not None else parse_prompt_field(row["prompt"])
-    try:
-        import tiktoken
+def row_n_tokens(row, messages=None):  # noqa: ARG001 — messages kept for call-site compat
+    """Official openai/mrcr `n_tokens` is prompt+answer with o200k_base.
 
-        enc = tiktoken.get_encoding("o200k_base")
-        return sum(len(enc.encode(m.get("content") or "")) for m in msgs)
-    except Exception:
-        text = " ".join((m.get("content") or "") for m in msgs)
-        # ~4 chars/tok; only used when tiktoken and columns are both missing.
-        return max(1, len(text) // 4)
+    Required. Do not recount with tiktoken (the serving image does not ship
+    it) and do not count prompt chars: that omits the answer tokens the
+    official bins are defined on.
+    """
+    raw = row.get("n_tokens") if isinstance(row, dict) else None
+    if raw is None or str(raw).strip() == "":
+        raise ValueError(
+            "MRCR row missing n_tokens; re-stage with fetch_mrcr.py "
+            "(official parquet already has the column)"
+        )
+    return int(raw)
 
 
 def select_rows(rows, bin_uppers, per_bin, max_prompt_tokens):
@@ -143,53 +139,61 @@ def select_rows(rows, bin_uppers, per_bin, max_prompt_tokens):
     return buckets, skipped_bin, skipped_ctx
 
 
-def iter_parquet_rows(paths):
-    """Yield dict rows from openai/mrcr parquet files. Needs pandas."""
-    import pandas as pd
+def iter_data_rows(paths):
+    """Yield dict rows from staged JSONL. Stdlib only — no pandas/pyarrow."""
+    for path in paths:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                yield json.loads(line)
 
-    frames = [pd.read_parquet(p) for p in paths]
-    df = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-    for rec in df.to_dict(orient="records"):
-        yield rec
 
-
-def default_parquet_names(needles):
+def default_jsonl_names(needles):
     return [
-        "%dneedle/%dneedle_0.parquet" % (needles, needles),
-        "%dneedle/%dneedle_1.parquet" % (needles, needles),
+        "%dneedle/%dneedle_0.jsonl" % (needles, needles),
+        "%dneedle/%dneedle_1.jsonl" % (needles, needles),
     ]
 
 
 def resolve_data_paths(needles, data_dir=None):
-    """Local dir first (NFS stage), then huggingface_hub download."""
+    """Local JSONL only. Parquet conversion stays on the login stager."""
     needles = int(needles)
-    names = default_parquet_names(needles)
+    names = default_jsonl_names(needles)
     data_dir = (data_dir or os.environ.get("MRCR_DATA_DIR") or "").strip()
     candidates = []
     if data_dir:
         candidates.append(data_dir)
     candidates.append("/shared_inference/bbarakat/datasets/openai_mrcr")
+    parquet_only = []
     for root in candidates:
         paths = [os.path.join(root, n) for n in names]
         if all(os.path.isfile(p) for p in paths):
             return paths
-        # also accept files dumped flat
         flat = [os.path.join(root, os.path.basename(n)) for n in names]
         if all(os.path.isfile(p) for p in flat):
             return flat
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise FileNotFoundError(
-            "openai/mrcr parquet not on disk (tried %s) and huggingface_hub "
-            "is missing. Stage 2needle_*.parquet under MRCR_DATA_DIR."
-            % candidates
-        ) from exc
-    out = []
-    for name in names:
-        out.append(
-            hf_hub_download(
-                repo_id="openai/mrcr", filename=name, repo_type="dataset"
-            )
+        parquet = [
+            os.path.join(root, n[:-6] + ".parquet") if n.endswith(".jsonl") else n
+            for n in names
+        ]
+        parquet_flat = [os.path.join(root, os.path.basename(p)) for p in parquet]
+        if all(os.path.isfile(p) for p in parquet) or all(
+            os.path.isfile(p) for p in parquet_flat
+        ):
+            parquet_only.append(root)
+    extra = ""
+    if parquet_only:
+        extra = (
+            " Found leftover parquet under %s but no JSONL — re-run "
+            "fetch_mrcr.py on the login node (it emits *.jsonl). "
+            % parquet_only
         )
-    return out
+    raise FileNotFoundError(
+        "openai/mrcr JSONL not on disk (tried %s).%s"
+        "Stage with: python3 fetch_mrcr.py --needles %d --out DIR "
+        "and set MRCR_DATA_DIR. Do not fetch from HuggingFace or load parquet "
+        "inside the serving container."
+        % (candidates, extra, needles)
+    )

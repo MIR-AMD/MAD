@@ -29,7 +29,7 @@ from mrcr_lib import (  # noqa: E402
     grade,
     resolve_data_paths,
     select_rows,
-    iter_parquet_rows,
+    iter_data_rows,
 )
 
 URL = os.environ.get("MRCR_URL") or os.environ.get("NIAH_URL") or "http://127.0.0.1:10001"
@@ -128,7 +128,7 @@ def main():
     )
     paths = resolve_data_paths(NEEDLES, DATA_DIR or None)
     print("[mrcr] data=%s" % paths, flush=True)
-    rows = list(iter_parquet_rows(paths))
+    rows = list(iter_data_rows(paths))
     print("[mrcr] loaded %d rows" % len(rows), flush=True)
     buckets, skipped_bin, skipped_ctx = select_rows(rows, BINS, PER_BIN, max_prompt)
     print(

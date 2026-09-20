@@ -56,6 +56,7 @@ NIAH_TIMEOUT="${NIAH_TIMEOUT:-1800}" \
 NIAH_WARMUP="${NIAH_WARMUP:-1}" \
 NIAH_SEEDS="${NIAH_SEEDS:-0,1,2}" \
   python3 "${DIR}/benchmark_niah.py" 2>&1 | tee -a "${LOG}"
+# Includes harness failure: python exits 1 when every request is NO-RESULT.
 niah_rc=${PIPESTATUS[0]}
 
 # Generate madengine perf.csv rows from NIAH results (mirrors benchmark_xPyD.sh)

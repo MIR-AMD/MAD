@@ -55,7 +55,9 @@ SCRIPT_DIR="${NIXL_COOKBOOK_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && p
 #   pandas  Reporting only. `benchmark_parser.py` is the sole tool that reports
 #          ITL/TTFT/TPOT, and it falls back to a stdlib table without pandas.
 #          `parse_to_csv.py` -- the one the job calls to write CONCURRENCY.csv
-#          and perf.csv -- is stdlib-only.
+#          and perf.csv -- is stdlib-only. MRCR does not use pandas: the login
+#          stager (`fetch_mrcr.py`) emits JSONL, and the job reads that with
+#          stdlib. Do not add pyarrow/tiktoken/huggingface_hub here.
 #
 # Non-fatal even for yaml: a compute node may have no route to PyPI, and if
 # yaml really is absent the existing bare import fails loudly a few lines
@@ -326,6 +328,7 @@ fi
 # =============================================================================
 # Node Role Assignment and Server Launch
 # =============================================================================
+_BENCH_RC=0
 if [ "$NODE_RANK" -eq 0 ]; then
     print_node_info "Prefill master + Proxy node (co-located)"
     connector_launch_worker "master" "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" "kv_producer" "prefill"
@@ -377,7 +380,8 @@ if [ "$NODE_RANK" -eq 0 ]; then
         sleep 3
     fi
 
-    bash "$NIXL_COOKBOOK_PATH/${BENCHMARK_SCRIPT_FILE:-benchmark_xPyD.sh}"
+    _BENCH_RC=0
+    bash "$NIXL_COOKBOOK_PATH/${BENCHMARK_SCRIPT_FILE:-benchmark_xPyD.sh}" || _BENCH_RC=$?
 
     [[ -n "$_agentic_shim_pid" ]] && { kill "$_agentic_shim_pid" 2>/dev/null || true; }
 
@@ -405,5 +409,9 @@ else
     wait_for_proxy_and_cleanup $WORKER_PID "decode child"
 fi
 
-echo "Script completed successfully."
-exit 0
+if [ "${_BENCH_RC:-0}" -eq 0 ]; then
+    echo "Script completed successfully."
+else
+    echo "Script completed with benchmark rc=${_BENCH_RC}."
+fi
+exit "${_BENCH_RC:-0}"

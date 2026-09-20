@@ -41,7 +41,9 @@ LOG_DIR="/shared_inference/${USER}/model_blog_logs/${SLURM_JOB_ID}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 SERVE_NAME="dsv4coloc-${SLURM_JOB_ID}"
 
-scontrol update "JobId=${SLURM_JOB_ID}" "JobName=dsv4fls-tp8-decode" 2>/dev/null || true
+_job_tag="dsv4fls"
+case "$MODEL" in pro|dsv4pro) _job_tag="dsv4pro" ;; esac
+scontrol update "JobId=${SLURM_JOB_ID}" "JobName=${_job_tag}-tp8-decode" 2>/dev/null || true
 
 echo "=== DSV4 co-located TP8 decode smoke (no disagg / no MoRIIO / no proxy) ==="
 echo "Job:      $SLURM_JOB_ID"

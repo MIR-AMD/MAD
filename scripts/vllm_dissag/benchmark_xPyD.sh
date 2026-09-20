@@ -31,6 +31,13 @@ vllm bench serve \
     --ignore-eos \
     --max-concurrency $WARMUP_CON \
     2>&1 | tee -a ${LOG}_CONCURRENCY.log >/dev/null
+rc=${PIPESTATUS[0]}
+if [ "$rc" -ne 0 ]; then
+    echo "[FAIL] warmup rc=$rc" | tee -a ${LOG}_CONCURRENCY.log >/dev/null
+    if [ "${sweep_rc:-0}" -eq 0 ]; then
+        sweep_rc=$rc
+    fi
+fi
 echo ""
 
 CON="${BENCHMARK_CON:-8 16 32 64 128 256 512}"
@@ -67,6 +74,14 @@ for i in $(seq 1 $BENCHMARK_ITR); do
                --ignore-eos \
                --max-concurrency ${_w_con} \
                2>&1 | tee -a ${LOG}_SHAPEWARMUP.log >/dev/null
+           rc=${PIPESTATUS[0]}
+           if [ "$rc" -ne 0 ]; then
+               echo "[FAIL] shape warmup isl=$isl osl=$osl rc=$rc" \
+                   | tee -a ${LOG}_CONCURRENCY.log >/dev/null
+               if [ "${sweep_rc:-0}" -eq 0 ]; then
+                   sweep_rc=$rc
+               fi
+           fi
        fi
        for con in $CON; do
            p_con=$(($con * 2))

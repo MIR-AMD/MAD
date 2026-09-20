@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline tests for OpenAI MRCR helpers. No GPU, no parquet download."""
+import json
 import os
 import sys
 
@@ -16,6 +17,9 @@ from mrcr_lib import (  # noqa: E402
     bin_upper,
     encode_dsv4_chat,
     grade,
+    iter_data_rows,
+    resolve_data_paths,
+    row_n_tokens,
     select_rows,
 )
 
@@ -82,6 +86,66 @@ def test_select():
     _check("over ctx counted", skipped_ctx == 1)
 
 
+def test_n_tokens_required():
+    _check("column wins", row_n_tokens({"n_tokens": 8192, "prompt": "[]"}) == 8192)
+    try:
+        row_n_tokens({"prompt": '[{"role":"user","content":"hello"}]'})
+    except ValueError as exc:
+        _check("missing n_tokens raises", "n_tokens" in str(exc))
+    else:
+        raise SystemExit("FAIL: missing n_tokens did not raise")
+
+
+def test_jsonl_stdlib():
+    import tempfile
+
+    rows = [
+        {
+            "n_tokens": 5000,
+            "prompt": '[{"role":"user","content":"u"}]',
+            "answer": "a",
+            "random_string_to_prepend": "h",
+        },
+        {
+            "n_tokens": 12000,
+            "prompt": '[{"role":"user","content":"v"}]',
+            "answer": "b",
+            "random_string_to_prepend": "i",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p0 = os.path.join(d, "2needle_0.jsonl")
+        p1 = os.path.join(d, "2needle_1.jsonl")
+        with open(p0, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(rows[0]) + "\n")
+        with open(p1, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(rows[1]) + "\n")
+        loaded = list(iter_data_rows([p0, p1]))
+        _check("jsonl row count", len(loaded) == 2)
+        _check("jsonl n_tokens", loaded[0]["n_tokens"] == 5000)
+        paths = resolve_data_paths(2, d)
+        _check("resolve flat jsonl", paths == [p0, p1])
+        nested = os.path.join(d, "nested")
+        os.makedirs(os.path.join(nested, "2needle"))
+        n0 = os.path.join(nested, "2needle", "2needle_0.jsonl")
+        n1 = os.path.join(nested, "2needle", "2needle_1.jsonl")
+        import shutil
+        shutil.copy2(p0, n0)
+        shutil.copy2(p1, n1)
+        paths = resolve_data_paths(2, nested)
+        _check("resolve nested jsonl", paths == [n0, n1])
+        empty = os.path.join(d, "empty")
+        os.makedirs(empty)
+        try:
+            resolve_data_paths(2, empty)
+        except FileNotFoundError as exc:
+            msg = str(exc)
+            _check("missing jsonl names login stager", "fetch_mrcr.py" in msg)
+            _check("missing jsonl forbids HF in container", "HuggingFace" in msg)
+        else:
+            raise SystemExit("FAIL: empty data dir did not raise")
+
+
 def test_prime_rejected():
     import subprocess
 
@@ -104,5 +168,7 @@ if __name__ == "__main__":
     test_bins()
     test_encode_chat()
     test_select()
+    test_n_tokens_required()
+    test_jsonl_stdlib()
     test_prime_rejected()
     print("\nall mrcr checks passed")

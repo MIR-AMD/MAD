@@ -9,6 +9,9 @@
 # job's process is cleared by the host `docker stop` in run_xPyD_models.slurm
 # before this container starts.
 
+# /proc/net/tcp documented columns 5–8 (tx_queue, rx_queue, tr, tm->when) are
+# colon-joined in the file, so awk fields are: $8=uid $9=timeout $10=inode.
+# Documented column 12 is awk $10. $12 is the sk pointer (hex) — do not use it.
 tcp_listen_inodes() {
     local hex
     hex=$(printf '%04X' "$1")
@@ -73,7 +76,7 @@ tcp_listen_dump_port() {
     awk -v p="$hex" 'NR > 1 {
         n = split($2, a, ":")
         if (n >= 2 && toupper(a[n]) == p)
-            print FILENAME, $2, "st="$4, "inode="$10
+            print FILENAME, $2, "st="$4, "uid="$8, "inode="$10
     }' /proc/net/tcp /proc/net/tcp6 2>/dev/null || true
 }
 
