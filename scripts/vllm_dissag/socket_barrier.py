@@ -29,6 +29,8 @@ elif len(NODE_PORTS) != len(NODE_IPS):
     exit(1)
 
 server_socket = None  # Global server socket reference
+_bound_ok = threading.Event()
+_bound_error = []
 
 def is_port_open(ip, port):
     """Check if a given IP and port are accessible."""
@@ -66,16 +68,27 @@ def wait_for_all_ports():
         time.sleep(5)
 
 def open_port():
-    """Open a listening socket on the current node."""
+    """Open a listening socket on the current node.
+
+    Bind failure is fatal. A stale leftover on this port would otherwise
+    make is_port_open() report ready while this process never owned it.
+    """
     global server_socket
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((args.local_ip, args.local_port))
-    server_socket.listen(5)
-    print(f"Port {args.local_port} is now open on {args.local_ip}.")
-    while True:
-        conn, addr = server_socket.accept()
-        conn.close()
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((args.local_ip, args.local_port))
+        server_socket.listen(5)
+        print(f"Port {args.local_port} is now open on {args.local_ip}.", flush=True)
+        _bound_ok.set()
+        while True:
+            conn, addr = server_socket.accept()
+            conn.close()
+    except Exception as e:
+        _bound_error.append(e)
+        print(f"Error: failed to bind local barrier port "
+              f"{args.local_ip}:{args.local_port}: {e}", flush=True)
+        _bound_ok.set()
 
 def close_port():
     """Close the opened port."""
@@ -91,6 +104,11 @@ if __name__ == "__main__":
 
     if args.enable_port:
         threading.Thread(target=open_port, daemon=True).start()
+        if not _bound_ok.wait(timeout=5):
+            print("Error: local barrier port bind did not complete.", flush=True)
+            exit(1)
+        if _bound_error:
+            exit(1)
 
     wait_for_all_ports()
 

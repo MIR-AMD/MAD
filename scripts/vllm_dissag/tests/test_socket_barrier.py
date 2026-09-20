@@ -76,6 +76,28 @@ try:
 finally:
     srv2.close()
 
+# Stale local listener: --enable-port must fail the bind, not treat the leftover
+# as "we are ready".
+stale = socket.socket()
+stale.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+stale.bind(("127.0.0.1", 0))
+stale.listen(5)
+held = stale.getsockname()[1]
+try:
+    r = run(
+        "127.0.0.1",
+        str(held),
+        ["--enable-port", "--local-ip", "127.0.0.1", "--local-port", str(held),
+         "--timeout", "5"],
+    )
+    check("stale listener: enable-port exits nonzero", r.returncode == 1,
+          f"rc={r.returncode} out={r.stdout[-200:]!r} err={r.stderr[-200:]!r}")
+    check("stale listener: names the bind failure",
+          "failed to bind" in r.stdout or "failed to bind" in r.stderr,
+          f"out={r.stdout[-200:]!r}")
+finally:
+    stale.close()
+
 print()
 if FAILED:
     print(f"FAILED: {len(FAILED)} -> {', '.join(FAILED)}")

@@ -72,7 +72,7 @@ Usage: ./run_wideep_bench.sh BENCH MODEL TOPO [flags]
 Flags:
   --dry-run              print sbatch, do not submit
   --image e03|e03tk|5a4c|d626|d626fd|mori624002|v0290|026|<tag>
-                         image (default: glm*→e03, dsv4fls/dsv4pro→mori624002, dsv3/hy3→026)
+                         image (default: glm*→e03, dsv4fls/dsv4pro→v0290, dsv3/hy3→026)
                          mori624002 = DSV4 vehicle. Hub d626108b + AITER 1d872fa + flydsl==0.3.1
                                   + MoRI 624002c8 + gRPC/UMBP.
                          v0290  = vLLM v0.29.0 + AITER main 10f8874 + MoRI 07bdace. Own Dockerfile.

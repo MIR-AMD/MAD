@@ -298,9 +298,13 @@ echo "PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}  DECODE_MASTER_ADDR=${DECODE_MA
 # =============================================================================
 if [[ "${DRY_RUN:-0}" != "1" ]]; then
     _BARRIER_PORT="${CONTAINER_BARRIER_PORT:-2222}"
-    for _pid in $(ss -tlnp sport = ${_BARRIER_PORT} 2>/dev/null | grep -oP "pid=\K\d+"); do
-        kill -9 "$_pid" 2>/dev/null
-    done
+    # Image has no ss/fuser (tcp_listen.sh). A leftover on this port makes
+    # socket_barrier's bind fail in a daemon thread while is_port_open() still
+    # sees the old listener as ready -- the barrier would pass without us
+    # owning the port. Kill what we can in this PID ns, then bind-or-die.
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/tcp_listen.sh"
+    tcp_listen_kill "${_BARRIER_PORT}" || true
     sleep 2
     # Bounded: a node that never launches its container cannot open the port,
     # and an unbounded barrier turns that into a silent hold on every node
