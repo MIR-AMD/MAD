@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hand the experts the rows that can hold a token, not the whole buffer. OFF by default.
+"""Hand the experts the rows that can hold a token, not the whole buffer. ON by default.
 
 THE BUG (436457, measured end to end -- not inferred)
 

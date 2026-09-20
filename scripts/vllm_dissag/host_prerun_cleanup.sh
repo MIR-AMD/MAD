@@ -6,13 +6,18 @@
 # Ready, then ZMQ :36367 EADDRINUSE; cancel left host-net listeners for 217463.
 #
 # This is the host (fuser exists). The vLLM image has neither ss nor fuser.
+#
+# Exclusive Slurm nodes only (--exclusive). Same leftover pattern as
+# run_xPyD_models.slurm's teardown `docker ps -q | xargs docker stop`. Restrict
+# the kill to host-network containers: those are the ones that pin 10001/36367
+# after scancel. Bridge-network sidecars on the node are left alone.
 set -u
 
 echo "[prerun-cleanup] $(hostname) begin"
 
-_ids=$(docker ps -q 2>/dev/null || true)
+_ids=$(docker ps --filter network=host -q 2>/dev/null || true)
 if [[ -n "${_ids}" ]]; then
-    echo "[prerun-cleanup] docker kill ${_ids}"
+    echo "[prerun-cleanup] docker kill host-net ${_ids}"
     # kill, not stop: cancelled jobs leave host-net listeners until SIGKILL.
     docker kill ${_ids} 2>/dev/null || true
     docker rm -f ${_ids} 2>/dev/null || true

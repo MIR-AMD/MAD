@@ -209,13 +209,17 @@ CONS="${BENCHMARK_CON:-1 4 8}"
 echo "===== vllm bench serve isl=${ISL} osl=${OSL} con=${CONS} =====" | tee -a "$SMOKE_LOG" "$BENCH_LOG"
 echo "[bench] host=127.0.0.1 port=${PORT} (colocated TP8, no proxy)" | tee -a "$BENCH_LOG"
 
+BENCH_RC=0
 run_bench() {
     local con="$1"
     local n_prompts="$2"
     local tag="$3"
     echo "[RUNNING] ${tag} prompts=${n_prompts} isl=${ISL} osl=${OSL} con=${con}" | tee -a "$BENCH_LOG"
     set +e
+    # Same mounts as the server: without them transformers treats MODEL_PATH
+    # as a HF repo id (435757).
     timeout 1800 docker run --rm --network=host \
+        -v /mnt:/mnt -v /shared_inference:/shared_inference \
         -e VLLM_USE_V1=1 \
         "$IMAGE" \
         vllm bench serve \
@@ -230,28 +234,35 @@ run_bench() {
             --num-prompts "$n_prompts" \
             --request-rate inf \
             --ignore-eos \
-            --max-concurrency "$con"
-    local rc=$?
+            --max-concurrency "$con" \
+        2>&1 | tee -a "$BENCH_LOG"
+    local rc=${PIPESTATUS[0]}
     set -e
     if [ "$rc" -eq 124 ]; then
         echo "[STALL] ${tag} con=${con} timed out" | tee -a "$BENCH_LOG" "$SMOKE_LOG"
+    elif [ "$rc" -ne 0 ]; then
+        echo "[FAIL] ${tag} con=${con} rc=${rc}" | tee -a "$BENCH_LOG" "$SMOKE_LOG"
+    fi
+    if [ "$rc" -ne 0 ] && [ "$BENCH_RC" -eq 0 ]; then
+        BENCH_RC=$rc
     fi
 }
 
-{
-    run_bench 1 16 warmup
-    for con in $CONS; do
-        n_prompts=$((con * 2))
-        if [ "$n_prompts" -lt 16 ]; then
-            n_prompts=16
-        fi
-        run_bench "$con" "$n_prompts" "bench"
-    done
-} 2>&1 | tee -a "$BENCH_LOG"
+run_bench 1 16 warmup
+for con in $CONS; do
+    n_prompts=$((con * 2))
+    if [ "$n_prompts" -lt 16 ]; then
+        n_prompts=16
+    fi
+    run_bench "$con" "$n_prompts" "bench"
+done
 
 echo "===== harvest (Median ITL) =====" | tee -a "$SMOKE_LOG"
 awk '/Maximum request concurrency:/{c=$4} /Successful requests:/{s=$3} /Failed requests:/{f=$3} /Output token throughput/{o=$5} /Median TTFT/{t=$4} /Median ITL/{print "  con="c" ok="s" fail="f" tok/s="o" TTFT="t" ITL="$4}' \
     "$BENCH_LOG" | tee -a "$SMOKE_LOG"
 
-echo "Done. curl_rc=${CURL_RC} Logs: ${LOG_DIR}"
-exit "$CURL_RC"
+echo "Done. curl_rc=${CURL_RC} bench_rc=${BENCH_RC} Logs: ${LOG_DIR}"
+if [ "$CURL_RC" -ne 0 ]; then
+    exit "$CURL_RC"
+fi
+exit "$BENCH_RC"

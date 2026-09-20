@@ -188,7 +188,7 @@ DeepSeek-R1:
   decode:
     dp: ""
 
-# DeepSeek-V4-Flash-FP8 (MoRI-EP, v0.28.0 image). Do NOT reuse the V3
+# DeepSeek-V4-Flash-FP8 (MoRI-EP, v0.29.0 image). Do NOT reuse the V3
 # recipe: V4 is sparse MLA + SWA (DeepseekV4ROCMAiterMLAAttention), not V3 MLA.
 #   - block=256 + kv fp8_e4m3  (CLI; DSV4 still remaps to fp8_ds_mla)
 #     217457/217460: MoRIIO dense MLA selector rejects fp8_ds_mla. Runtime
@@ -279,7 +279,7 @@ DeepSeek-V4-Flash-FP8:
     tp: ""
     dp: "--max-num-seqs 4 --max-model-len 40960 --max-num-batched-tokens 1024"
 
-# DeepSeek-V4-Pro-FP8 (MoRI-EP, same v0.28.0 image as Flash). Same
+# DeepSeek-V4-Pro-FP8 (MoRI-EP, same v0.29.0 image as Flash). Same
 # DeepseekV4ForCausalLM / tokenizer deepseek_v4 / CSA+HCA+SWA hybrid as Flash,
 # so the Flash MoRIIO patchers (attn backend, indexer register+gate WRITE,
 # mixed-bs, transfer gate, SupportsHMA+specmap+geom fold, RDMA wait) apply.

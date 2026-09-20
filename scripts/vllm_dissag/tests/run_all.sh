@@ -18,6 +18,15 @@ echo ""
 echo "############### test_mrcr.py ###############"
 python3 "$ROOT/tests/test_mrcr.py" || rc=1
 echo ""
+echo "############### test_parsers.py ###############"
+python3 "$ROOT/tests/test_parsers.py" || rc=1
+echo ""
+echo "############### test_mori_trim.py ###############"
+python3 "$ROOT/tests/test_mori_trim.py" || rc=1
+echo ""
+echo "############### test_socket_barrier.py ###############"
+python3 "$ROOT/tests/test_socket_barrier.py" || rc=1
+echo ""
 echo "############### test_moriio_pd_proxy.py ###############"
 ( cd "$ROOT/proxy" && python3 test_moriio_pd_proxy.py ) || rc=1
 echo ""
