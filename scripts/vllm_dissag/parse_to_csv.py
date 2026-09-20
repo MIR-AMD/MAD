@@ -10,6 +10,7 @@ Log format (from benchmark_xPyD.sh):
   Total token throughput (tok/s):          <VALUE>
 """
 
+import os
 import re
 import csv
 from pathlib import Path
@@ -191,6 +192,28 @@ def parse_niah_log(log_file: str) -> Dict[int, Dict]:
     return results
 
 
+def _open_perf_csv(output_file: str, fieldnames):
+    """Open perf.csv for writing, appending to an existing file of the same shape.
+
+    BENCH=validate runs NIAH and then the concurrency sweep in one allocation, and
+    both write this path. Truncating would leave only whichever ran last (438023
+    lost all six NIAH rows to the sweep that followed it). Append instead, writing
+    the header only when creating the file. A file with a different header is
+    replaced rather than corrupted.
+    """
+    exists = os.path.isfile(output_file) and os.path.getsize(output_file) > 0
+    if exists:
+        with open(output_file, newline='') as f:
+            first = f.readline().strip()
+        if first != ','.join(fieldnames):
+            exists = False
+    f = open(output_file, 'a' if exists else 'w', newline='')
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    if not exists:
+        writer.writeheader()
+    return f, writer
+
+
 def save_niah_perf_csv(results: Dict[int, Dict], output_file: str,
                        model_name: str = "", pipeline: str = "vllm"):
     """Save NIAH results in madengine perf.csv format (one row per context length)."""
@@ -210,10 +233,8 @@ def save_niah_perf_csv(results: Dict[int, Dict], output_file: str,
         'additional_docker_run_options',
     ]
 
-    with open(output_file, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
+    f, writer = _open_perf_csv(output_file, fieldnames)
+    with f:
         for n_words in sorted(results.keys()):
             data = results[n_words]
             row = {
@@ -247,10 +268,8 @@ def save_perf_csv(results: Dict[Tuple[int, int, int], Dict], output_file: str,
         'additional_docker_run_options',
     ]
 
-    with open(output_file, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
+    f, writer = _open_perf_csv(output_file, fieldnames)
+    with f:
         for (input_tokens, output_tokens, concurrency), data in sorted(
             results.items(), key=lambda x: (x[0][2], x[0][0], x[0][1])
         ):

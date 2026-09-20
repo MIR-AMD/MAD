@@ -205,9 +205,41 @@ def test_benchmark_parser():
           "write_csv round-trips every row with ITL included")
 
 
+def test_perf_csv_append():
+    """BENCH=validate writes perf.csv twice; the second must not clobber the first.
+
+    438023 lost all six NIAH rows because both writers truncated, and the
+    concurrency sweep runs after NIAH.
+    """
+    import csv as _csv
+
+    m = _load("ptc3", os.path.join(ROOT, "parse_to_csv.py"))
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "perf.csv")
+
+    m.save_niah_perf_csv({2000: {"mean": 10.0, "n": 1},
+                          8000: {"mean": 9.0, "n": 1}}, p, "DSV4-Flash")
+    m.save_perf_csv({(1024, 1024, 1): {"max_throughput": 63.56, "input_tokens": 1024,
+                                       "output_tokens": 1024, "concurrency": 1}},
+                    p, "DSV4-Flash")
+
+    rows = list(_csv.DictReader(open(p)))
+    check(len(rows) == 3, "NIAH rows survive the concurrency sweep that follows them")
+    check(sum("niah" in r["metric"] for r in rows) == 2, "both NIAH rows are still present")
+    check(open(p).read().count("model,n_gpus") == 1, "header written exactly once")
+
+    solo = os.path.join(d, "solo.csv")
+    m.save_perf_csv({(1024, 1024, 8): {"max_throughput": 1.0, "input_tokens": 1024,
+                                       "output_tokens": 1024, "concurrency": 8}},
+                    solo, "X")
+    check(len(list(_csv.DictReader(open(solo)))) == 1,
+          "a single-bench job still writes exactly its own rows")
+
+
 if __name__ == "__main__":
     test_parse_to_csv()
     test_parse_to_csv_niah()
     test_benchmark_parser()
+    test_perf_csv_append()
     print("\n" + ("FAILED: " + "; ".join(FAILS) if FAILS else "all parser tests passed"))
     sys.exit(1 if FAILS else 0)
