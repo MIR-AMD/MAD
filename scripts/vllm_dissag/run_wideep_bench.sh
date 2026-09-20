@@ -80,7 +80,7 @@ Flags:
   --image e03|e03tk|5a4c|d626|d626fd|mori624002|v0280|v0290|026|<tag>
                          image (default: glm*→e03, dsv4fls/dsv4pro→mori624002, dsv3/hy3→026)
                          mori624002 = DSV4 vehicle. Hub d626108b + AITER 1d872fa + flydsl==0.3.1
-                                  + MoRI 624002c8 + gRPC/UMBP. Pair with DSV4_HMA_UPSTREAM_GEOM=1.
+                                  + MoRI 624002c8 + gRPC/UMBP.
                          v0280  = vLLM release v0.28.0 + MoRI 6fcf6b3. Same AITER/flydsl/tk as
                                   mori624002, so a delta is vLLM-or-MoRI, not attributable further.
                                   Unproven: smoke it, then HMA=0 2k+8k vs 218778 before any claim.
@@ -397,7 +397,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
     EXTRA_ENV+=(MORI_SHMEM_HEAP_SIZE=34359738368)
     # Product default HMA=0 (yaml). Set DSV4_ENABLE_HMA=1 only for extra-cache A/B.
     EXTRA_ENV+=(DSV4_ENABLE_HMA="${DSV4_ENABLE_HMA:-0}")
-    EXTRA_ENV+=(DSV4_SKIP_INDEXER_REGISTER="${DSV4_SKIP_INDEXER_REGISTER:-0}")
     # 218040: .attn (group-0 sliding_window=None) was never WRITTEN, leaving
     # decode a 128-token window. 1 = transfer it. Default 0 reproduces 218040.
     # HMA=1 owns wait_for_save, so this patcher is skipped at runtime.
@@ -407,22 +406,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
     else
         EXTRA_ENV+=(DSV4_TRANSFER_ATTN="${DSV4_TRANSFER_ATTN:-0}")
     fi
-    EXTRA_ENV+=(DSV4_HMA_UPSTREAM_GEOM="${DSV4_HMA_UPSTREAM_GEOM:-1}")
-    # Per-page block_len + the region_len span floor. Set together: PAGE alone is
-    # the 218257 garbage cell (region_len under-registers) and moriio.sh refuses
-    # that combination. Together they aim at correct-and-minimal HMA=1.
-    EXTRA_ENV+=(DSV4_HMA_PAGE_BLOCK_LEN="${DSV4_HMA_PAGE_BLOCK_LEN:-0}")
-    # 223633: CLIP remainder did not make extra-cache visible. Native slice
-    # for .attn only (HMA=0 TRANSFER_ATTN copy). Not PAGE_BLOCK_LEN (218257).
-    # Forces REGION_LEN_SPAN so .attn offsets stay inside the MR.
-    EXTRA_ENV+=(DSV4_HMA_NATIVE_ATTN="${DSV4_HMA_NATIVE_ATTN:-0}")
-    if [[ "${DSV4_HMA_NATIVE_ATTN:-0}" == "1" ]]; then
-        DSV4_REGION_LEN_SPAN=1
-    fi
-    EXTRA_ENV+=(DSV4_REGION_LEN_SPAN="${DSV4_REGION_LEN_SPAN:-0}")
-    # 223559: whole-block copy from view origin S>0 stomps dest page P+1.
-    # CLIP_PAGE subtracts S from block_len (not PAGE_BLOCK_LEN / 218257).
-    EXTRA_ENV+=(DSV4_HMA_CLIP_PAGE="${DSV4_HMA_CLIP_PAGE:-0}")
     # vllm#48989 non-contiguous MR: N*stride[0]*es vs tight view bbox.
     # Default 0 keeps 217546/218443. HMA=1 GEOM=1 full-block copies want 1.
     EXTRA_ENV+=(DSV4_STORAGE_UPSTREAM_SPAN="${DSV4_STORAGE_UPSTREAM_SPAN:-0}")
@@ -438,14 +421,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Flash-FP8" ]]; then
         # silently absent (that invisibility is the 223837 NIAH_TERSE class).
         EXTRA_ENV+=(DECODE_CUDAGRAPH_MODE="${DECODE_CUDAGRAPH_MODE}")
     fi
-    # 218687: HMA last-chunk is 5 groups × page 4 = 20 tokens. Curl (~17) writes;
-    # 2k NIAH never schedules unless this is on. HMA=0 keeps the flat-id path.
-    if [[ "${DSV4_ENABLE_HMA:-0}" == "0" ]]; then
-        EXTRA_ENV+=(DSV4_CHUNK_HMA_FIX="${DSV4_CHUNK_HMA_FIX:-0}")
-    else
-        EXTRA_ENV+=(DSV4_CHUNK_HMA_FIX="${DSV4_CHUNK_HMA_FIX:-1}")
-    fi
-    EXTRA_ENV+=(DSV4_DP_PROBE="${DSV4_DP_PROBE:-0}")
     EXTRA_ENV+=(VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-DEBUG}")
     EXTRA_ENV+=(PROXY_LOG_LEVEL="${PROXY_LOG_LEVEL:-DEBUG}")
     EXTRA_ENV+=(CURL_SUITE=short)
@@ -504,25 +479,11 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
     EXTRA_ENV+=(KV_CACHE_DTYPE=fp8_e4m3 VLLM_ROCM_USE_AITER_MLA=1)
     EXTRA_ENV+=(MORI_SHMEM_HEAP_SIZE=17179869184)
     EXTRA_ENV+=(DSV4_ENABLE_HMA="${DSV4_ENABLE_HMA:-0}")
-    EXTRA_ENV+=(DSV4_SKIP_INDEXER_REGISTER="${DSV4_SKIP_INDEXER_REGISTER:-0}")
     if [[ "${DSV4_ENABLE_HMA:-0}" == "0" ]]; then
         EXTRA_ENV+=(DSV4_TRANSFER_ATTN="${DSV4_TRANSFER_ATTN:-1}")
     else
         EXTRA_ENV+=(DSV4_TRANSFER_ATTN="${DSV4_TRANSFER_ATTN:-0}")
     fi
-    EXTRA_ENV+=(DSV4_HMA_UPSTREAM_GEOM="${DSV4_HMA_UPSTREAM_GEOM:-1}")
-    EXTRA_ENV+=(DSV4_HMA_PAGE_BLOCK_LEN="${DSV4_HMA_PAGE_BLOCK_LEN:-0}")
-    # 223633: CLIP remainder did not make extra-cache visible. Native slice
-    # for .attn only (HMA=0 TRANSFER_ATTN copy). Not PAGE_BLOCK_LEN (218257).
-    # Forces REGION_LEN_SPAN so .attn offsets stay inside the MR.
-    EXTRA_ENV+=(DSV4_HMA_NATIVE_ATTN="${DSV4_HMA_NATIVE_ATTN:-0}")
-    if [[ "${DSV4_HMA_NATIVE_ATTN:-0}" == "1" ]]; then
-        DSV4_REGION_LEN_SPAN=1
-    fi
-    EXTRA_ENV+=(DSV4_REGION_LEN_SPAN="${DSV4_REGION_LEN_SPAN:-0}")
-    # 223559: whole-block copy from view origin S>0 stomps dest page P+1.
-    # CLIP_PAGE subtracts S from block_len (not PAGE_BLOCK_LEN / 218257).
-    EXTRA_ENV+=(DSV4_HMA_CLIP_PAGE="${DSV4_HMA_CLIP_PAGE:-0}")
     # vllm#48989 non-contiguous MR: N*stride[0]*es vs tight view bbox.
     # Default 0 keeps 217546/218443. HMA=1 GEOM=1 full-block copies want 1.
     EXTRA_ENV+=(DSV4_STORAGE_UPSTREAM_SPAN="${DSV4_STORAGE_UPSTREAM_SPAN:-0}")
@@ -538,12 +499,6 @@ if [[ "$MODEL_NAME" == "DeepSeek-V4-Pro-FP8" ]]; then
         # silently absent (that invisibility is the 223837 NIAH_TERSE class).
         EXTRA_ENV+=(DECODE_CUDAGRAPH_MODE="${DECODE_CUDAGRAPH_MODE}")
     fi
-    if [[ "${DSV4_ENABLE_HMA:-0}" == "0" ]]; then
-        EXTRA_ENV+=(DSV4_CHUNK_HMA_FIX="${DSV4_CHUNK_HMA_FIX:-0}")
-    else
-        EXTRA_ENV+=(DSV4_CHUNK_HMA_FIX="${DSV4_CHUNK_HMA_FIX:-1}")
-    fi
-    EXTRA_ENV+=(DSV4_DP_PROBE="${DSV4_DP_PROBE:-0}")
     EXTRA_ENV+=(VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-DEBUG}")
     EXTRA_ENV+=(PROXY_LOG_LEVEL="${PROXY_LOG_LEVEL:-DEBUG}")
     EXTRA_ENV+=(CURL_SUITE=short)
