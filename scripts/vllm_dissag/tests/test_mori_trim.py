@@ -17,7 +17,7 @@ and no MoRI.
 
 Properties asserted:
 
-  1. Unset MORI_TRIM_DISPATCH returns None (stock behaviour, byte-identical).
+  1. Unset MORI_TRIM_DISPATCH is ARMED (default ON); =0 opts back out to stock.
   2. Armed, the bound is world_size * max(num_tokens_across_dp_cpu) -- the MAX
      across ranks, not this rank's count, because dispatch is collective.
   3. Prefill, where the bound meets or exceeds the buffer, returns None so
@@ -141,12 +141,21 @@ def _make(world_size=8, per_rank=(1,) * 8, capturing=False):
 def main():
     print("apply_mori_trim_dispatch: row-bound decision")
 
-    # 1. Unset is stock. The real buffer at mnbt 1024 / EP8 is 8192 rows.
+    # 1. Unset is ARMED -- the default is ON, and models.yaml no longer pins
+    # it off. The real buffer at mnbt 1024 / EP8 is 8192 rows.
     os.environ.pop("MORI_TRIM_DISPATCH", None)
     os.environ.pop("MORI_TRIM_CHECK", None)
+    obj, _ = _make(world_size=8, per_rank=(1,) * 8)
+    _check(
+        "unset MORI_TRIM_DISPATCH -> armed (default ON)",
+        obj._mori_trim_rows(_Tensor(1), _Tensor(8192), _Tensor(1, total=8)) == 8,
+    )
+
+    # 1b. Explicit 0 is the escape hatch back to stock.
+    os.environ["MORI_TRIM_DISPATCH"] = "0"
     obj, _ = _make()
     _check(
-        "unset MORI_TRIM_DISPATCH -> None (no trim)",
+        "MORI_TRIM_DISPATCH=0 -> None (opt out to stock)",
         obj._mori_trim_rows(_Tensor(1), _Tensor(8192), _Tensor(1, total=8)) is None,
     )
 

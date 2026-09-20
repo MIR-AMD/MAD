@@ -272,8 +272,8 @@ connector_runtime_patch() {
     _mori_combine_original_topk_fix
     # Right after combine: both edit the same MoE prepare/finalize file, and
     # this one is the decode_hot fix -- 436486 took Flash EP8 from 308.30 ms
-    # to 26.80 ms ITL with byte-identical output. Inert unless
-    # MORI_TRIM_DISPATCH=1.
+    # to 26.80 ms ITL with byte-identical output. On by default;
+    # MORI_TRIM_DISPATCH=0 opts out.
     _mori_trim_dispatch
     _dsv4_moriio_attn_backend_fix
     _dsv4_skip_noncontiguous_register
@@ -313,8 +313,12 @@ _mori_combine_original_topk_fix() {
 # colocated from 308.30 ms to 26.80 ms with a byte-identical greedy answer.
 #
 # Applied on BOTH arms so the two cells differ only by the env flag and not by
-# the patch state of the file; it does nothing unless MORI_TRIM_DISPATCH=1, so
-# an unset PD run stays byte-identical to every row already measured.
+# the patch state of the file.
+#
+# ON BY DEFAULT. MORI_TRIM_DISPATCH=0 is the escape hatch for a case where the
+# padded buffer is actually wanted; it is not a knob callers should need. The
+# default deliberately does NOT live in models.yaml, because a yaml value wins
+# over an unset env and silently served stock latency (437704).
 #
 # Failure is fatal only when the trim was actually asked for. A trim=0 control
 # whose patcher failed to apply is still a perfectly valid baseline, and
@@ -322,7 +326,7 @@ _mori_combine_original_topk_fix() {
 # not affect it. Unlike combine(), a missing trim cannot corrupt output -- the
 # worst case is stock latency.
 _mori_trim_dispatch() {
-    local _want="${MORI_TRIM_DISPATCH:-0}"
+    local _want="${MORI_TRIM_DISPATCH:-1}"
     local _fail_note="not requested (trim=${_want}), continuing as a stock cell"
     [ "${_want}" = "1" ] && _fail_note="REQUESTED trim=1"
     local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"

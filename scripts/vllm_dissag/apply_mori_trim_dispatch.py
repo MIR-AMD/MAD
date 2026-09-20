@@ -80,8 +80,11 @@ SAFETY
   cudagraph capture is unaffected (each captured batch size gets its own
   constant bound).
 
-    MORI_TRIM_DISPATCH   set to 1 to arm. Unset (default) is byte-identical to
-                         stock: one dict lookup per prepare() and no slicing.
+    MORI_TRIM_DISPATCH   ON by default. Set to 0 to fall back to stock
+                         (one dict lookup per prepare(), no slicing) -- kept
+                         as an escape hatch for a case where the padded
+                         buffer turns out to be wanted, not as a knob callers
+                         are expected to set.
     MORI_TRIM_CHECK      verify `total_recv <= bound` on the first N prepare()
                          calls. Costs one host sync per checked call, so this is
                          a tripwire for bringing the fix up, not a default. On
@@ -141,7 +144,7 @@ NEW_PREPARE_DEF = '''    _mori_trim_checked = 0
         """
         import os
 
-        if os.environ.get("MORI_TRIM_DISPATCH", "") != "1":
+        if os.environ.get("MORI_TRIM_DISPATCH", "1") != "1":
             return None
 
         rows = dispatch_a1.shape[0]

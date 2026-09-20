@@ -116,7 +116,7 @@ _has "$S" '${DSV4_TRANSFER_ATTN:+-e DSV4_TRANSFER_ATTN=' "slurm forwards DSV4_TR
 # default it (the yaml loader skips vars already in the environment, so a
 # wrapper default would make the yaml entry dead config).
 echo ""
-echo "=== MoRI dispatch trim is wired end to end, and opt-in ==="
+echo "=== MoRI dispatch trim is wired end to end, ON by default, opt-OUT ==="
 M="$(cat "$DIR/connectors/moriio.sh")"
 _has    "$M" "_mori_trim_dispatch" "moriio calls the trim patcher"
 _has    "$M" "apply_mori_trim_dispatch.py" "moriio names the trim patcher file"
@@ -125,18 +125,25 @@ _has    "$S" '${MORI_TRIM_DISPATCH:+-e MORI_TRIM_DISPATCH=' "slurm forwards MORI
 _has    "$S" '${MORI_TRIM_CHECK:+-e MORI_TRIM_CHECK=' "slurm forwards MORI_TRIM_CHECK"
 W="$(cat "$DIR/run_wideep_bench.sh")"
 _hasnot "$W" 'MORI_TRIM_DISPATCH="${MORI_TRIM_DISPATCH:-0}"' \
-        "wrapper does NOT default trim (would kill the models.yaml value)"
-_has    "$W" 'MORI_TRIM=${MORI_TRIM_DISPATCH:-yaml}' "wrapper prints the effective trim source"
+        "wrapper does NOT default trim (the connector owns the default)"
+_has    "$W" 'MORI_TRIM=${MORI_TRIM_DISPATCH:-1 (default)}' "wrapper prints the effective trim source"
+# The trim default is ON and lives in the connector. It must NOT be in
+# models.yaml: a yaml value wins over an unset env, which is how 437704 served
+# a stock cell while its plan line implied the default was applied.
+_has    "$M" 'local _want="${MORI_TRIM_DISPATCH:-1}"' "connector defaults trim ON"
 _TRIM="$(python3 - "$DIR/models.yaml" <<'PY'
 import sys, yaml
 y = yaml.safe_load(open(sys.argv[1])) or {}
-print(" ".join(f"{m}={(c.get('env') or {}).get('MORI_TRIM_DISPATCH')}"
-                for m, c in sorted(y.items())
-                if isinstance(c, dict) and "MORI_TRIM_DISPATCH" in (c.get("env") or {})))
+hits = [m for m, c in sorted(y.items())
+        if isinstance(c, dict) and "MORI_TRIM_DISPATCH" in (c.get("env") or {})]
+print("models.yaml trim entries: " + (", ".join(hits) if hits else "NONE"))
 PY
 )"
-_has "$_TRIM" "DeepSeek-V4-Flash-FP8=0" "models.yaml: Flash trim default is OFF"
-_has "$_TRIM" "DeepSeek-V4-Pro-FP8=0"   "models.yaml: Pro trim default is OFF"
+_has "$_TRIM" "NONE" "models.yaml does not pin trim (would override the ON default)"
+# The runtime gate inside the injected code must agree with the shell default.
+_has "$(cat "$DIR/apply_mori_trim_dispatch.py")" \
+     'os.environ.get("MORI_TRIM_DISPATCH", "1") != "1"' \
+     "injected runtime gate defaults trim ON"
 
 # The container-side init section. models.yaml is loaded INSIDE the container by
 # vllm_disagg.sh with a bare `import yaml`, twice, and it resolves both the

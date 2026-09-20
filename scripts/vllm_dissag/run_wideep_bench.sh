@@ -635,7 +635,7 @@ echo "IMAGE=$DOCKER_IMAGE_NAME"
 echo "PROXY_TYPE=${PROXY_TYPE:-moriio_toy}  PROXY_ROUTE_DP=$PROXY_ROUTE_DP  SKIP_MORIIO_DP=${ROUTER_SKIP_MORIIO_DP_SIZE}  PING=${MORI_PROXY_PING_PORT}  CONC=${PROXY_MAX_CONCURRENCY}  WIDE_EP=1"
 # `yaml` means unset at submit time, so models.yaml decides. Printed because a
 # trim cell and a stock cell differ only by this and by ~280 ms of ITL.
-echo "MORI_TRIM=${MORI_TRIM_DISPATCH:-yaml}  TRIM_CHECK=${MORI_TRIM_CHECK:-yaml}"
+echo "MORI_TRIM=${MORI_TRIM_DISPATCH:-1 (default)}  TRIM_CHECK=${MORI_TRIM_CHECK:-yaml}"
 [[ "${PROXY_TYPE:-moriio_toy}" == "vllm_router" ]] && echo "ROUTER_BOOT=${ROUTER_BOOT_INSTALL:-baked}  REPO=${ROUTER_REPO:-image}  REF=${ROUTER_REF:-f962dfcf}"
 echo "TIME=$TIME_ARG"
 [[ "$BENCH" == "smoke" || "$BENCH" == "validate" ]] && echo "SMOKE CON=${BENCHMARK_CON:-default}  COMBOS=$BENCHMARK_COMBINATIONS  STEP_SEC_PER_TOK=${STEP_SEC_PER_TOK:-}  STEP_TIMEOUT=${STEP_TIMEOUT:-}"

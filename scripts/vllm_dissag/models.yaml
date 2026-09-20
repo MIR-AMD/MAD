@@ -261,10 +261,10 @@ DeepSeek-V4-Flash-FP8:
     # were provably inert. Prefill is untouched by construction -- there the
     # bound equals the buffer and the patcher takes the stock path.
     #
-    # Still "0" here: every product row in the pickup rules was measured
-    # without it, and no PD/EP16/EP32/Pro cell has confirmed it yet. Flip at
-    # submit time (MORI_TRIM_DISPATCH=1), which wins over this value.
-    MORI_TRIM_DISPATCH: "0"
+    # The default is ON and lives in the connector, deliberately NOT here: a
+    # value in this file wins over an unset env, which is how 437704 booted
+    # trim=0 while its plan line said the default applied. MORI_TRIM_DISPATCH=0
+    # at submit time is the escape hatch.
     # 217778 TYPE 1 already Lisa/Paris/London. 36-prompt curl is ~4s/tok.
     CURL_SUITE: "short"
   dp_flags: "--tokenizer-mode deepseek_v4"
@@ -335,11 +335,9 @@ DeepSeek-V4-Pro-FP8:
     # 217779 dummy passed (mnbt 1024) then HMA-on SimpleGeo garbage.
     # Same 217748 hole. Off = Flash 217778 Lisa Su path. TEP stays off.
     DSV4_ENABLE_HMA: "0"
-    # See the Flash block above for the derivation. Pro's buffer is the same
-    # mnbt * EP shape, and Pro has 61 layers against Flash's 43, so if
-    # anything it pays more for the padding. Measured on Flash only so far --
-    # this is "0" until a Pro cell says otherwise.
-    MORI_TRIM_DISPATCH: "0"
+    # Trim is on by default from the connector for Pro too -- see the Flash
+    # block above. Pro's buffer is the same mnbt * EP shape and Pro has 61
+    # layers against Flash's 43, so if anything it pays more for the padding.
     CURL_SUITE: "short"
   dp_flags: "--tokenizer-mode deepseek_v4"
   prefill:
