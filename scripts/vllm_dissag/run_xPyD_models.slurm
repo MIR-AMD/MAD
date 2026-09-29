@@ -88,6 +88,7 @@ VALID_MODELS=( \
     "Qwen3-32B" \
     "Qwen3-30B-A3B" \
     "GLM-5.1-FP8" \
+    "GLM-5.3-FP8" \
 )
 
 # Models allowed for CONNECTOR=moriio WIDE_EP=1 (MoRI-EP; legacy RUN_MORI=1)
@@ -96,6 +97,7 @@ MORI_EP_VALID_MODELS=( \
     "DeepSeek-V3-5layer" \
     "DeepSeek-R1" \
     "GLM-5.1-FP8" \
+    "GLM-5.3-FP8" \
 )
 
 # Models allowed for CONNECTOR=rixl WIDE_EP=1 EP_BACKEND=deepep (legacy RUN_DEEPEP=1)
@@ -182,7 +184,7 @@ WIDE_EP="${WIDE_EP:-0}"
 # in TP mode is unsupported — the TP argv would double the model's own
 # --compilation-config and drop the mandatory +quant_fp8 op. Reject early.
 # GLM-5.1-FP8 (MLA+DSA) is validated only under MoRI-EP wideEP; moriio+TP is untested.
-WIDE_EP_ONLY_MODELS=( "DeepSeek-V3" "DeepSeek-V3-5layer" "DeepSeek-R1" "GLM-5.1-FP8" )
+WIDE_EP_ONLY_MODELS=( "DeepSeek-V3" "DeepSeek-V3-5layer" "DeepSeek-R1" "GLM-5.1-FP8" "GLM-5.3-FP8" )
 model_is_wide_ep_only() {
   local m="$1"
   for x in "${WIDE_EP_ONLY_MODELS[@]}"; do [[ "$m" == "$x" ]] && return 0; done
@@ -686,6 +688,9 @@ docker run --rm \
     ${VLLM_CACHE_ROOT:+-e VLLM_CACHE_ROOT=$VLLM_CACHE_ROOT} \
     ${COMGR_CACHE_DIR:+-e COMGR_CACHE_DIR=$COMGR_CACHE_DIR} \
     ${AITER_JIT_DIR:+-e AITER_JIT_DIR=$AITER_JIT_DIR} \
+    ${VLLM_GCN_ARCH:+-e VLLM_GCN_ARCH=$VLLM_GCN_ARCH} \
+    ${GLM_SKIP_PATCHERS:+-e GLM_SKIP_PATCHERS=$GLM_SKIP_PATCHERS} \
+    ${TVM_FFI_DISABLE_TORCH_C_DLPACK:+-e TVM_FFI_DISABLE_TORCH_C_DLPACK=$TVM_FFI_DISABLE_TORCH_C_DLPACK} \
     -e DISTRIBUTED_TIMEOUT_SECONDS=${DISTRIBUTED_TIMEOUT_SECONDS:-7200} \
     -e VLLM_RPC_TIMEOUT=${VLLM_RPC_TIMEOUT:-300000} \
     -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS:-3600} \

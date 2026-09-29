@@ -120,7 +120,7 @@ connector_setup_env() {
 
 _moriio_build_kv_transfer_config() {
     local kv_role="$1"
-    echo '{"kv_connector":"MoRIIOConnector","kv_role":"'"${kv_role}"'","kv_port":"'"${KV_PORT}"'","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"'"${PROXY_PORT}"'","proxy_ping_port":"'"${PROXY_PING_PORT}"'","http_port":"'"${SERVE_PORT}"'","local_ping_port":"'"${LOCAL_PING_PORT}"'","handshake_port":"'"${HANDSHAKE_PORT}"'","notify_port":"'"${NOTIFY_PORT}"'"}}'
+    echo '{"kv_connector":"MoRIIOConnector","kv_role":"'"${kv_role}"'","kv_port":"'"${KV_PORT}"'","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"'"${PROXY_PORT}"'","proxy_ping_port":"'"${PROXY_PING_PORT}"'","http_port":"'"${SERVE_PORT}"'","local_ping_port":"'"${LOCAL_PING_PORT}"'","handshake_port":"'"${HANDSHAKE_PORT}"'","notify_port":"'"${NOTIFY_PORT}"'"'"${MORIIO_DEFER_TIMEOUT:+,\"defer_timeout\":${MORIIO_DEFER_TIMEOUT}}"'}}'
 }
 
 connector_runtime_patch() {
@@ -370,9 +370,9 @@ connector_start_proxy() {
             --decode "${DECODE_URL}" \
             --vllm-discovery-address "0.0.0.0:${PROXY_PING_PORT}" \
             --intra-node-data-parallel-size "${_router_dp_local}" \
-            --policy round_robin \
-            --prefill-policy round_robin \
-            --decode-policy round_robin \
+            --policy "${ROUTER_POLICY:-round_robin}" \
+            --prefill-policy "${ROUTER_PREFILL_POLICY:-round_robin}" \
+            --decode-policy "${ROUTER_DECODE_POLICY:-round_robin}" \
             --log-level "${VLLM_ROUTER_LOG_LEVEL:-info}" \
             --prometheus-port "${_PROMETHEUS_PORT}" \
             > >(tee /run_logs/${SLURM_JOB_ID}/vllm_router_NODE${NODE_RANK}.log >/dev/null) 2>&1 &

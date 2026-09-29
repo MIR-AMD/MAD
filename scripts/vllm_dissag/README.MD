@@ -41,7 +41,7 @@ neither → combo 1.
 Use these exact `MODEL_NAME` values (defined in `models.yaml` + the slurm allowlists).
 The **Combos** column lists which of the 4 valid combos above each model may run in; the
 slurm gate rejects any other pairing. Dense models are TP-only; the DeepSeek family and
-`GLM-5.1-FP8` are **wideEP-only** (TP is rejected — their recipes need the wideEP serve
+`GLM-5.1-FP8`/`GLM-5.3-FP8` are **wideEP-only** (TP is rejected — their recipes need the wideEP serve
 path).
 
 | Model | Type | Combos (by #) | Notes |
@@ -55,6 +55,7 @@ path).
 | `DeepSeek-V3-5layer` | MoE | 3, 4 (wideEP only) | smoke/dev variant |
 | `DeepSeek-R1` | MoE | 3, 4 (wideEP only) | needs a co-versioned AITER image (see Caveats) |
 | `GLM-5.1-FP8` | MoE + DSA | 3 (moriio wideEP only) | own image (`glmv5.1` Dockerfile); 2P/2D EP16 and 4P/4D EP32 validated on the current pins (NIAH ~93-97%) |
+| `GLM-5.3-FP8` | MoE + DSA | 3 (moriio wideEP only) | bring-your-own Recipe 18 image (see below); 1P/1D EP8 with MTP, prefix caching and a session-affinity router |
 
 ## Prerequisites
 
@@ -94,6 +95,16 @@ its `VLLM_REF` is a hard requirement, not a preference — MAD ships no runtime 
 so every GLM DSA fix has to be in-source in that image. Add a
 `vllm_disagg_inference.<model>.ubuntu.amd.Dockerfile` per future model that needs its
 own pins rather than repinning the shared one.
+
+`GLM-5.3-FP8` has no MAD Dockerfile: it runs on the Recipe 18 image, built from the Recipe 18
+handover bundle (`docker build -f Dockerfile.recipe18 .`, vLLM v0.27.1 + WideEP fork overlay and
+a vllm-router carrying the PD session-affinity patch, router#313). Its `models.json` cards set
+`AITER_JIT_DIR=/usr/local/lib/python3.12/dist-packages/aiter/jit`, where that image keeps its
+prebuilt AITER modules; the image ENV points elsewhere, and a `models.yaml` `env:` value cannot
+override an image ENV, so pass it via `env_vars` or a submit-time export. The cards also set
+`VLLM_GCN_ARCH`, `GLM_SKIP_PATCHERS` and `TVM_FFI_DISABLE_TORCH_C_DLPACK=1`: the image's
+sitecustomize reads them on every python start, so they must be present at container start
+(without the last one, each python start recursively spawns a tvm-ffi addon build).
 
 Then `export DOCKER_IMAGE_NAME=<tag>` (or a published image) before submitting. The slurm
 `docker pull`s the image on every node, so a local-only tag must be pushed to a registry the nodes
@@ -210,6 +221,11 @@ router (e.g. the mori121 MoRI-EP image) require `ROUTER_BINARY=<path>` — point
 `vllm-router` on a shared mount. If unset and none is on `PATH`, the launcher aborts with a
 clear error.
 
+Router policies default to `round_robin` and are overridable per model via `ROUTER_POLICY`,
+`ROUTER_PREFILL_POLICY`, `ROUTER_DECODE_POLICY` (GLM-5.3 uses `consistent_hash` for prefill,
+keyed on the `X-Session-ID` header). `MORIIO_DEFER_TIMEOUT` (unset by default) adds
+`defer_timeout` to the MoRIIO `kv_connector_extra_config`.
+
 ## Validation status (image capability)
 
 The consolidated launcher assembles correct argv for all 4 combos (offline gates in `tests/`),
@@ -259,6 +275,10 @@ sweep via the launcher's benchmark hook:
 export BENCHMARK_SCRIPT=niah
 export NIAH_WORDS="2000,8000,20000,35000"     # context sizes (words); optional
 ```
+
+`NIAH_THINK_OFF=prefill` disables thinking by ending the prompt with an empty assistant turn
+instead of `enable_thinking=False`, for chat templates that ignore that flag (GLM-5.3), and
+scores `content` only.
 
 Or run `benchmark_niah.py` standalone against any live OpenAI-compatible endpoint
 (`NIAH_URL`, `NIAH_MODEL`).

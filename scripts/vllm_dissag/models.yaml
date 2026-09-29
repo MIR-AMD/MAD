@@ -281,3 +281,44 @@ GLM-5.1-FP8:
     # prompt length: smaller values cut per-token latency but inflate TTFT sharply;
     # 2048 was the balance point.
     dp: "--max-num-batched-tokens 2048"
+
+# GLM-5.3-FP8 (GlmMoeDsaForCausalLM, 1M native ctx) — Recipe 18, 1P1D EP8.
+# IMAGE CONTRACT: bring-your-own image built from the Recipe 18 handover bundle
+# (Dockerfile.recipe18: vLLM v0.27.1 + WideEP fork overlay, patched vllm-router with PD
+# session affinity). No MAD Dockerfile builds it. AITER_JIT_DIR cannot live here: the
+# image ENV sets it, and an already-set key skips this block — pass it via models.json
+# env_vars / submit-time export instead. Same for VLLM_GCN_ARCH, GLM_SKIP_PATCHERS and
+# TVM_FFI_DISABLE_TORCH_C_DLPACK: the image's sitecustomize reads them on every python
+# start, including the one that parses this file, so they must be set at container start.
+GLM-5.3-FP8:
+  env:
+    PREFILL_CUDAGRAPH_MODE: "NONE"
+    DECODE_CUDAGRAPH_MODE: "FULL_AND_PIECEWISE"
+    PREFILL_MORI_BACKEND: "mori_high_throughput"
+    DECODE_MORI_BACKEND: "mori_low_latency"
+    # AITER JIT (e.g. the top-k/top-p sampler on the first sampled request) otherwise
+    # compiles with --offload-arch=native, whose arch probe output is polluted by the
+    # image's sitecustomize logging -> clang++ fails and the request hangs.
+    GPU_ARCHS: "gfx942"
+    # Session affinity: X-Session-ID hashes to a sticky prefill rank (prefix-cache reuse),
+    # decode stays round-robin. Needs the Recipe 18 router (router#313 patch).
+    ROUTER_POLICY: "consistent_hash"
+    ROUTER_PREFILL_POLICY: "consistent_hash"
+    ROUTER_DECODE_POLICY: "round_robin"
+    # Long-context prefills exceed the connector's 60s deferred-write default.
+    MORIIO_DEFER_TIMEOUT: "600"
+    # MoRI's own 4 GiB default, as validated at EP8. The connector's 16 GiB default (sized
+    # for EP>=32) is not seen by vLLM's memory profiler and OOMs the prefill KV-cache
+    # allocation at gpu-memory-utilization 0.8.
+    MORI_SHMEM_HEAP_SIZE: "4294967296"
+    # aiperf copies its stable per-trajectory X-Correlation-ID into X-Session-ID.
+    AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: "true"
+    # GLM-5.3's chat template ignores enable_thinking; NIAH suppresses thinking by
+    # prefilling an empty assistant turn instead.
+    NIAH_THINK_OFF: "prefill"
+  # MTP n=3 on both roles, as validated in Recipe 18.
+  dp_flags: "--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}' --max-model-len 400000"
+  prefill:
+    dp: "--max-num-batched-tokens 8192"
+  decode:
+    dp: "--max-num-batched-tokens 2048"

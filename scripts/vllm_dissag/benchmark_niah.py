@@ -17,6 +17,10 @@
 #                a shape can take minutes to compile; without warmup that lands on the
 #                first scored request -> false 0/10 or timeout. Warmup failures are
 #                tolerated (logged, not fatal). Set 0 to disable.
+#   NIAH_THINK_OFF  enable_thinking (default) = chat_template_kwargs.enable_thinking=False;
+#                prefill = end the prompt with an empty assistant turn instead, for chat
+#                templates that ignore enable_thinking (e.g. GLM-5.3). prefill scores
+#                `content` only.
 import os, sys, json, random, urllib.request
 
 URL = os.environ.get("NIAH_URL", "http://127.0.0.1:30000/v1/chat/completions")
@@ -29,6 +33,7 @@ TIMEOUT = float(os.environ.get("NIAH_TIMEOUT", "1800"))
 # variance; the summary reports mean/min/max across seeds. Default 0,1,2.
 SEEDS = [int(x) for x in os.environ.get("NIAH_SEEDS", "0,1,2").split(",") if x.strip()]
 WARMUP = os.environ.get("NIAH_WARMUP", "1") == "1"
+THINK_OFF = os.environ.get("NIAH_THINK_OFF", "enable_thinking")
 # Warmup uses a generous timeout (cold compile of a long-context shape can take minutes)
 # and never fails the run — its only job is to trigger compilation before scoring.
 WARMUP_TIMEOUT = max(TIMEOUT, 1800.0)
@@ -73,6 +78,11 @@ def _request(n_words, seed, max_tokens, timeout):
         # false 0/10. Disable thinking so the answer lands in `content` directly.
         "chat_template_kwargs": {"enable_thinking": False},
     }
+    if THINK_OFF == "prefill":
+        del body["chat_template_kwargs"]
+        body["messages"].append({"role": "assistant", "content": ""})
+        body["continue_final_message"] = True
+        body["add_generation_prompt"] = False
     data = json.dumps(body).encode()
     req = urllib.request.Request(URL, data=data, headers={"Content-Type": "application/json"})
     try:
@@ -102,6 +112,8 @@ def run(n_words, seed=0):
     text = ((msg.get("content") or "") + " "
             + (msg.get("reasoning_content") or "") + " "
             + (msg.get("reasoning") or "")).lower()
+    if THINK_OFF == "prefill":
+        text = (msg.get("content") or "").lower()
     found = sorted(a for a in ANIMALS if a in text)
     print("words=%6d  seed=%d  found=%2d/10  %s" % (n_words, seed, len(found), found), flush=True)
     return len(found)

@@ -342,6 +342,117 @@
         "args": "-N 2 -n 2"
     },
     {
+        "name": "pyt_vllm_disagg_mori_glm-5.3-fp8",
+        "dockerfile": "../../docker/vllm_disagg_inference.glmv5.1",
+        "scripts": "run_xPyD_models.slurm",
+        "url": "",
+        "data": "huggingface",
+        "n_gpus": "-1",
+        "owner": "mad.support@amd.com",
+        "training_precision": "",
+        "tags": [
+            "pyt",
+            "vllm",
+            "vllm_disagg",
+            "mori_ep",
+            "inference"
+        ],
+        "timeout": -1,
+        "distributed": {
+            "launcher": "slurm_multi"
+        },
+        "env_vars": {
+            "DOCKER_IMAGE_NAME": "<supply-your-image>",
+            "MODEL_NAME": "GLM-5.3-FP8",
+            "xP": "1",
+            "yD": "1",
+            "RUN_MORI": "1",
+            "RUN_DEEPEP": "0",
+            "AITER_JIT_DIR": "/usr/local/lib/python3.12/dist-packages/aiter/jit",
+            "VLLM_GCN_ARCH": "gfx942",
+            "GLM_SKIP_PATCHERS": "1",
+            "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+            "BENCHMARK_COMBINATIONS": "1024/1024"
+        },
+        "args": "-N 2 -n 2"
+    },
+    {
+        "name": "pyt_vllm_disagg_mori_glm-5.3-fp8_niah",
+        "dockerfile": "../../docker/vllm_disagg_inference.glmv5.1",
+        "scripts": "run_xPyD_models.slurm",
+        "url": "",
+        "data": "huggingface",
+        "n_gpus": "-1",
+        "owner": "mad.support@amd.com",
+        "training_precision": "",
+        "tags": [
+            "pyt",
+            "vllm",
+            "vllm_disagg",
+            "mori_ep",
+            "inference",
+            "niah"
+        ],
+        "timeout": -1,
+        "distributed": {
+            "launcher": "slurm_multi"
+        },
+        "env_vars": {
+            "DOCKER_IMAGE_NAME": "<supply-your-image>",
+            "MODEL_NAME": "GLM-5.3-FP8",
+            "xP": "1",
+            "yD": "1",
+            "RUN_MORI": "1",
+            "RUN_DEEPEP": "0",
+            "AITER_JIT_DIR": "/usr/local/lib/python3.12/dist-packages/aiter/jit",
+            "VLLM_GCN_ARCH": "gfx942",
+            "GLM_SKIP_PATCHERS": "1",
+            "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+            "BENCHMARK_SCRIPT": "niah",
+            "NIAH_WORDS": "8000,32000,128000",
+            "ENABLE_PREFIX_CACHE": "1"
+        },
+        "args": "-N 2 -n 2"
+    },
+    {
+        "name": "pyt_vllm_disagg_mori_agentic_glm-5.3-fp8",
+        "dockerfile": "../../docker/vllm_disagg_inference.glmv5.1",
+        "scripts": "run_xPyD_models.slurm",
+        "url": "",
+        "data": "huggingface",
+        "n_gpus": "-1",
+        "owner": "mad.support@amd.com",
+        "training_precision": "",
+        "tags": [
+            "pyt",
+            "vllm",
+            "vllm_disagg",
+            "mori_ep",
+            "inference",
+            "agentic"
+        ],
+        "timeout": -1,
+        "distributed": {
+            "launcher": "slurm_multi"
+        },
+        "env_vars": {
+            "DOCKER_IMAGE_NAME": "<supply-your-image>",
+            "MODEL_NAME": "GLM-5.3-FP8",
+            "xP": "1",
+            "yD": "1",
+            "RUN_MORI": "1",
+            "RUN_DEEPEP": "0",
+            "AITER_JIT_DIR": "/usr/local/lib/python3.12/dist-packages/aiter/jit",
+            "VLLM_GCN_ARCH": "gfx942",
+            "GLM_SKIP_PATCHERS": "1",
+            "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+            "BENCHMARK_SCRIPT": "agentic",
+            "AGENTIC_WORKLOAD": "conformance_256k",
+            "AGENTIC_CONC": "4"
+        },
+        "args": "-N 2 -n 2"
+    },
+    {
         "name": "pyt_vllm_disagg_deepep_deepseek-v3",
         "dockerfile": "../../docker/vllm_disagg_inference",
         "scripts": "run_xPyD_models.slurm",

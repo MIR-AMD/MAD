@@ -15,9 +15,9 @@ SLURM="$DIR/run_xPyD_models.slurm"
 pass=0; fail=0
 
 # emit argv for a cell
-_argv() { # connector wide_ep ep_backend model model_path
+_argv() { # connector wide_ep ep_backend model model_path [node_rank]
   env -i PATH="$PATH" HOME="$HOME" NIXL_COOKBOOK_PATH="$DIR" \
-    DRY_RUN=1 NODE_RANK=0 xP=1 yD=1 CONNECTOR="$1" WIDE_EP="$2" EP_BACKEND="$3" \
+    DRY_RUN=1 NODE_RANK="${6:-0}" xP=1 yD=1 CONNECTOR="$1" WIDE_EP="$2" EP_BACKEND="$3" \
     MODEL_NAME="$4" MODEL_PATH="$5" MASTER_ADDR=10.0.0.1 IPADDRS=10.0.0.1,10.0.0.2 \
     GPUS_PER_NODE=8 SLURM_JOB_ID=ASSERT PROXY_TYPE=vllm_router ROUTER_PORT=30000 \
     bash "$DIR/vllm_disagg.sh" 2>/dev/null | awk '/^===DRYRUN/{f=1;next} /^===END===/{f=0} f'
@@ -46,6 +46,26 @@ _has    "$B" "--block-size" "has --block-size"
 _has    "$B" "16" "block-size value 16 present"
 _count  "$B" "--compilation-config" 1 "exactly one --compilation-config"
 _hasnot "$B" "--tensor-parallel-size" "no --tensor-parallel-size (uses -tp 1)"
+
+_hasnot "$B" "defer_timeout" "no defer_timeout unless MORIIO_DEFER_TIMEOUT is set"
+
+echo ""
+echo "=== moriio + wideEP (GLM-5.3-FP8, Recipe 18) ==="
+P="$(_argv moriio 1 mori GLM-5.3-FP8 /m/GLM53 0)"
+D="$(_argv moriio 1 mori GLM-5.3-FP8 /m/GLM53 1)"
+_has    "$P" '{"method":"mtp","num_speculative_tokens":3}' "prefill: MTP speculative-config is one argv item"
+_has    "$D" '{"method":"mtp","num_speculative_tokens":3}' "decode: MTP speculative-config is one argv item"
+_has    "$P" '"defer_timeout":600' "prefill: kv_transfer_config defer_timeout=600"
+_has    "$D" '"defer_timeout":600' "decode: kv_transfer_config defer_timeout=600"
+_has    "$P" "400000" "max-model-len 400000"
+_has    "$P" "8192" "prefill: max-num-batched-tokens 8192"
+_has    "$D" "2048" "decode: max-num-batched-tokens 2048"
+_has    "$D" "mori_low_latency" "decode all2all = mori_low_latency"
+_count  "$P" "--max-model-len" 1 "exactly one --max-model-len"
+M="$(cat "$DIR/connectors/moriio.sh")"
+_has "$M" '--policy "${ROUTER_POLICY:-round_robin}"' "router policy defaults to round_robin"
+_has "$M" '--prefill-policy "${ROUTER_PREFILL_POLICY:-round_robin}"' "router prefill-policy defaults to round_robin"
+_has "$M" '--decode-policy "${ROUTER_DECODE_POLICY:-round_robin}"' "router decode-policy defaults to round_robin"
 
 echo ""
 echo "=== connector platform env files carry the RDMA-fix env ==="
@@ -98,6 +118,7 @@ PY
 _has "$_OPTIN" "[GLM-5.1-FP8]" "models.yaml: GLM-5.1-FP8 is the ONLY warmup opt-in"
 _has "$(cat "$SLURM")" '${SHAPE_WARMUP:+-e SHAPE_WARMUP=' "slurm forwards SHAPE_WARMUP override"
 _has "$(cat "$SLURM")" '${USE_INDUCTOR_GRAPH_PARTITION:+-e USE_INDUCTOR_GRAPH_PARTITION=' "slurm forwards IGP override"
+_has "$(cat "$SLURM")" '${TVM_FFI_DISABLE_TORCH_C_DLPACK:+-e TVM_FFI_DISABLE_TORCH_C_DLPACK=' "slurm forwards TVM_FFI_DISABLE_TORCH_C_DLPACK (needed at container start)"
 
 echo ""
 echo "======================================================"
