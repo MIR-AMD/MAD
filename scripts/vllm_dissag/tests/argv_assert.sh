@@ -119,6 +119,7 @@ _has "$_OPTIN" "[GLM-5.1-FP8]" "models.yaml: GLM-5.1-FP8 is the ONLY warmup opt-
 _has "$(cat "$SLURM")" '${SHAPE_WARMUP:+-e SHAPE_WARMUP=' "slurm forwards SHAPE_WARMUP override"
 _has "$(cat "$SLURM")" '${USE_INDUCTOR_GRAPH_PARTITION:+-e USE_INDUCTOR_GRAPH_PARTITION=' "slurm forwards IGP override"
 _has "$(cat "$SLURM")" '${TVM_FFI_DISABLE_TORCH_C_DLPACK:+-e TVM_FFI_DISABLE_TORCH_C_DLPACK=' "slurm forwards TVM_FFI_DISABLE_TORCH_C_DLPACK (needed at container start)"
+_has "$(cat "$SLURM")" '${VLLM_LOGGING_STREAM:+-e VLLM_LOGGING_STREAM=' "slurm forwards VLLM_LOGGING_STREAM (needed at container start)"
 
 echo ""
 echo "======================================================"

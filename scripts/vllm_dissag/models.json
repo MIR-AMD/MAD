@@ -372,6 +372,7 @@
             "VLLM_GCN_ARCH": "gfx942",
             "GLM_SKIP_PATCHERS": "1",
             "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+            "VLLM_LOGGING_STREAM": "ext://sys.stderr",
             "BENCHMARK_COMBINATIONS": "1024/1024"
         },
         "args": "-N 2 -n 2"
@@ -408,6 +409,7 @@
             "VLLM_GCN_ARCH": "gfx942",
             "GLM_SKIP_PATCHERS": "1",
             "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+            "VLLM_LOGGING_STREAM": "ext://sys.stderr",
             "BENCHMARK_SCRIPT": "niah",
             "NIAH_WORDS": "8000,32000,128000",
             "ENABLE_PREFIX_CACHE": "1"
@@ -446,6 +448,7 @@
             "VLLM_GCN_ARCH": "gfx942",
             "GLM_SKIP_PATCHERS": "1",
             "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+            "VLLM_LOGGING_STREAM": "ext://sys.stderr",
             "BENCHMARK_SCRIPT": "agentic",
             "AGENTIC_WORKLOAD": "conformance_256k",
             "AGENTIC_CONC": "4"

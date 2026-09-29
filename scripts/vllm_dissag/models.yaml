@@ -287,9 +287,10 @@ GLM-5.1-FP8:
 # (Dockerfile.recipe18: vLLM v0.27.1 + WideEP fork overlay, patched vllm-router with PD
 # session affinity). No MAD Dockerfile builds it. AITER_JIT_DIR cannot live here: the
 # image ENV sets it, and an already-set key skips this block — pass it via models.json
-# env_vars / submit-time export instead. Same for VLLM_GCN_ARCH, GLM_SKIP_PATCHERS and
-# TVM_FFI_DISABLE_TORCH_C_DLPACK: the image's sitecustomize reads them on every python
-# start, including the one that parses this file, so they must be set at container start.
+# env_vars / submit-time export instead. Same for VLLM_GCN_ARCH, GLM_SKIP_PATCHERS,
+# TVM_FFI_DISABLE_TORCH_C_DLPACK and VLLM_LOGGING_STREAM: the image's sitecustomize runs
+# on every python start (including the one that parses this file) and imports vLLM, whose
+# INFO logs go to stdout by default and corrupt every `$(python3 ...)` the harness evals.
 GLM-5.3-FP8:
   env:
     PREFILL_CUDAGRAPH_MODE: "NONE"
