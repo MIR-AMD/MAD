@@ -102,9 +102,8 @@ a vllm-router carrying the PD session-affinity patch, router#313). Its `models.j
 `AITER_JIT_DIR=/usr/local/lib/python3.12/dist-packages/aiter/jit`, where that image keeps its
 prebuilt AITER modules; the image ENV points elsewhere, and a `models.yaml` `env:` value cannot
 override an image ENV, so pass it via `env_vars` or a submit-time export. The cards also set
-`VLLM_GCN_ARCH`, `GLM_SKIP_PATCHERS`, `TVM_FFI_DISABLE_TORCH_C_DLPACK=1` and
-`VLLM_LOGGING_STREAM=ext://sys.stderr`: the image's sitecustomize runs on every python start,
-so they must be present at container start. Without the tvm-ffi one, each python start
+`TVM_FFI_DISABLE_TORCH_C_DLPACK=1` and `VLLM_LOGGING_STREAM=ext://sys.stderr`: the image's
+sitecustomize runs on every python start, so they must be present at container start. Without the tvm-ffi one, each python start
 recursively spawns a tvm-ffi addon build; without the logging one, vLLM INFO lines land on
 stdout and corrupt the harness's `$(python3 ...)` evals (e.g. the agentic config load).
 

@@ -529,10 +529,10 @@ _RDMA_MOUNTS=""
 _LIBDIR=/usr/lib/x86_64-linux-gnu
 
 for _lib in libibverbs.so libibverbs.so.1 librdmacm.so librdmacm.so.1; do
-    [ -f "$_LIBDIR/$_lib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/$_lib:$_LIBDIR/$_lib:ro"
+    [ -e "$_LIBDIR/$_lib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/$_lib:$_LIBDIR/$_lib:ro"
 done
 for _vlib in $_LIBDIR/libibverbs.so.1.* $_LIBDIR/librdmacm.so.1.*; do
-    [ -f "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
+    [ -e "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
 done
 
 for _pattern in libmlx5.so* libionic*.so* libbnxt_re*.so* libefa.so* libhns.so*; do
@@ -691,8 +691,6 @@ docker run --rm \
     ${VLLM_CACHE_ROOT:+-e VLLM_CACHE_ROOT=$VLLM_CACHE_ROOT} \
     ${COMGR_CACHE_DIR:+-e COMGR_CACHE_DIR=$COMGR_CACHE_DIR} \
     ${AITER_JIT_DIR:+-e AITER_JIT_DIR=$AITER_JIT_DIR} \
-    ${VLLM_GCN_ARCH:+-e VLLM_GCN_ARCH=$VLLM_GCN_ARCH} \
-    ${GLM_SKIP_PATCHERS:+-e GLM_SKIP_PATCHERS=$GLM_SKIP_PATCHERS} \
     ${TVM_FFI_DISABLE_TORCH_C_DLPACK:+-e TVM_FFI_DISABLE_TORCH_C_DLPACK=$TVM_FFI_DISABLE_TORCH_C_DLPACK} \
     ${VLLM_LOGGING_STREAM:+-e VLLM_LOGGING_STREAM=$VLLM_LOGGING_STREAM} \
     -e DISTRIBUTED_TIMEOUT_SECONDS=${DISTRIBUTED_TIMEOUT_SECONDS:-7200} \

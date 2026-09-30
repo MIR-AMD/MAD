@@ -430,7 +430,7 @@ def _synth_config_from_env():
     if want in _HF_PRESETS:
         wl = {"name": want, "source": "hf", "loader": _HF_PRESETS[want]}
     else:
-        wl = {"name": want, "preset": want}
+        wl = {"name": want, "source": "profile", "preset": want}
     return {"serving": {}, "run": {}, "workloads": [wl]}
 
 
