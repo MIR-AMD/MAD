@@ -120,6 +120,7 @@ _has "$(cat "$SLURM")" '${SHAPE_WARMUP:+-e SHAPE_WARMUP=' "slurm forwards SHAPE_
 _has "$(cat "$SLURM")" '${USE_INDUCTOR_GRAPH_PARTITION:+-e USE_INDUCTOR_GRAPH_PARTITION=' "slurm forwards IGP override"
 _has "$(cat "$SLURM")" '${TVM_FFI_DISABLE_TORCH_C_DLPACK:+-e TVM_FFI_DISABLE_TORCH_C_DLPACK=' "slurm forwards TVM_FFI_DISABLE_TORCH_C_DLPACK (needed at container start)"
 _has "$(cat "$SLURM")" '${VLLM_LOGGING_STREAM:+-e VLLM_LOGGING_STREAM=' "slurm forwards VLLM_LOGGING_STREAM (needed at container start)"
+_has "$(cat "$SLURM")" '${ROUTER_PREFILL_POLICY:+-e ROUTER_PREFILL_POLICY=' "slurm forwards ROUTER_PREFILL_POLICY (submit-time override)"
 
 echo ""
 echo "======================================================"

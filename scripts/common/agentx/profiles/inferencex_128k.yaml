@@ -1,0 +1,12 @@
+# Reusable HF (weka) workload preset: the canonical InferenceX AgentX-MVP
+# corpus trimmed to 128k-context sessions (the GLM-5.3-FP8 Recipe 18 reference
+# workload). Run it config-less with AGENTIC_WORKLOAD=inferencex_128k.
+# No concurrency/duration here, so AGENTIC_CONC / DURATION (or run:) apply.
+source: hf
+loader: semianalysis_cc_traces_weka_062126_256k
+
+num_dataset_entries: 393
+trajectory: { min: 0.25, max: 0.75 }
+
+# Tier 2: drop sessions with any turn over 128k input tokens.
+filter: { max_isl: 131072 }

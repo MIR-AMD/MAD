@@ -225,8 +225,9 @@ clear error.
 
 Router policies default to `round_robin` and are overridable per model via `ROUTER_POLICY`,
 `ROUTER_PREFILL_POLICY`, `ROUTER_DECODE_POLICY` (GLM-5.3 uses `consistent_hash` for prefill,
-keyed on the `X-Session-ID` header). `MORIIO_DEFER_TIMEOUT` (unset by default) adds
-`defer_timeout` to the MoRIIO `kv_connector_extra_config`.
+keyed on the `X-Session-ID` header); a submit-time export of the same variables wins over
+`models.yaml`, e.g. `ROUTER_PREFILL_POLICY=round_robin` for an affinity-off control run.
+`MORIIO_DEFER_TIMEOUT` (unset by default) adds `defer_timeout` to the MoRIIO `kv_connector_extra_config`.
 
 ## Validation status (image capability)
 
