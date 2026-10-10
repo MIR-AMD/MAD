@@ -104,28 +104,21 @@ RUN set -eu; \
     for c in \
       "$V/tilelang_utils/__init__.py|class _DeferredTileLangJitKernel" \
       "$V/v1/worker/gpu/block_table.py|is_real_req = req_state_idx >= 0" \
-      "$V/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py|GLM53_GDN_HASATTR_FIX" \
-      "$V/models/common/ops/fused_qk_rmsnorm.py|GLM53_FUSED_QK_RMSNORM_OP" \
-      "$V/v1/attention/backends/mla/indexer.py|GLM53_KPOOL_SLOT_MAPPING_FIX" \
-      "$V/models/glm5next/amd/ops/kpool_compress.py|tl.program_id(0).to(tl.int64)" \
-      "$V/v1/attention/ops/rocm_aiter_mla_sparse.py|GLM53_FLYDSL_FP8_MQA_IMPORT_GUARD" \
-      "$V/model_executor/layers/sparse_attn_indexer_kpool.py|GLM53_DISAGG_INDEXER_KV_BARRIER" \
-      "$M/moriio_layout.py|GLM53_INDEXER_KBPB" \
-      "$M/moriio_connector.py|GLM53_INDEXER_KBPB_CONNECTOR" \
-      "$M/moriio_common.py|GLM53_PERGROUP_REMOTE_BLOCKS" \
-      "$M/moriio_connector.py|GLM53_PERGROUP_REMOTE_BLOCKS" \
-      "$M/moriio_connector.py|GLM53_MTP_ALLOC_RECONCILE" \
-      "$M/moriio_connector.py|GLM53_MORIIO_READ_STEP_BARRIER" \
-      "$V/v1/core/sched/scheduler.py|GLM53_SYNC_LOAD_SKIP_ZERO" \
       "$V/v1/worker/gpu/spec_decode/rejection_sampler.py|def gather_draft_sampled" \
-      "$A/ops/triton/attention/fp8_mqa_logits.py|GLM53_FP8_MQA_GFX942_LDS" \
-      "$A/ops/triton/gluon/pa_mqa_logits.py|GLM53_PA_MQA_LOGITS_INT64" \
-      "$A/ops/flydsl/kernels/fp8_mqa_logits.py|def flydsl_fp8_mqa_logits" ; do \
+      "$M/moriio_layout.py|kernel_blocks_per_block = spec.num_states // shape[2]" \
+      "$M/moriio_connector.py|reads would escape the pre-forward barrier" \
+      "$V/models/common/ops/fused_qk_rmsnorm.py|op_name=\"fused_q_kv_rmsnorm\"" \
+      "$M/moriio_connector.py|self._attn_group_is_state" \
+      "$M/moriio_connector.py|self.block_len = max(distinct_block_lens)" \
+      "$V/v1/worker/utils.py|def _block_size_is_supported(" \
+      "$A/ops/triton/attention/fp8_mqa_logits.py|def _gfx942_tile_fits_lds(" \
+      "$A/ops/triton/gluon/pa_mqa_logits.py|The KV strides are 64-bit" \
+      "$A/ops/flydsl/fp8_mqa_logits_kernels.py|def flydsl_fp8_mqa_logits" ; do \
       f=${c%%|*}; n=${c#*|}; \
       grep -qF -- "$n" "$f" 2>/dev/null || { echo "MISSING GLM-5.3 fix: $n in $f"; miss=1; }; \
     done; \
-    python3 -c "import re,sys; s=open(sys.argv[1]).read(); m=re.search(r'class KpoolTailSpec\b.*?(?=\n@dataclass|\nclass )', s, re.S); sys.exit(0 if m and 'def uses_slot_mapping' in m.group(0) else 1)" "$V/v1/kv_cache_interface.py" || { echo "MISSING GLM-5.3 fix: KpoolTailSpec.uses_slot_mapping"; miss=1; }; \
-    [ "$miss" = 0 ]; echo "all 20 GLM-5.3 fix markers present"
+    python3 -c "import re,sys; s=open(sys.argv[1]).read(); m=re.search(r'class CircularBufferSpec\b.*?(?=\n@dataclass|\nclass )', s, re.S); sys.exit(0 if m and 'def uses_slot_mapping' in m.group(0) else 1)" "$V/v1/kv_cache_interface.py" || { echo "MISSING GLM-5.3 fix: CircularBufferSpec.uses_slot_mapping"; miss=1; }; \
+    [ "$miss" = 0 ]; echo "all 13 GLM-5.3 upstream fix checks present"
 
 # -----------------------------------------------------------------------------
 # 5. vllm-router (Rust). Router main needs rustc >= 1.91 (its vllm-tokenizer git
