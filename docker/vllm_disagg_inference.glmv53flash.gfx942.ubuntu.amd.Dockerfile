@@ -110,6 +110,7 @@ RUN set -eu; \
       "$V/models/common/ops/fused_qk_rmsnorm.py|op_name=\"fused_q_kv_rmsnorm\"" \
       "$M/moriio_connector.py|self._attn_group_is_state" \
       "$M/moriio_connector.py|isinstance(spec, supported)" \
+      "$M/moriio_connector.py|def _is_mamba_group_spec(" \
       "$M/moriio_connector.py|self.block_len = max(distinct_block_lens)" \
       "$V/v1/worker/utils.py|def _block_size_is_supported(" \
       "$A/ops/triton/attention/fp8_mqa_logits.py|def _gfx942_tile_fits_lds(" \
@@ -119,7 +120,7 @@ RUN set -eu; \
       grep -qF -- "$n" "$f" 2>/dev/null || { echo "MISSING GLM-5.3 fix: $n in $f"; miss=1; }; \
     done; \
     python3 -c "import re,sys; s=open(sys.argv[1]).read(); m=re.search(r'class CircularBufferSpec\b.*?(?=\n@dataclass|\nclass )', s, re.S); sys.exit(0 if m and 'def uses_slot_mapping' in m.group(0) else 1)" "$V/v1/kv_cache_interface.py" || { echo "MISSING GLM-5.3 fix: CircularBufferSpec.uses_slot_mapping"; miss=1; }; \
-    [ "$miss" = 0 ]; echo "all 14 GLM-5.3 upstream fix checks present"
+    [ "$miss" = 0 ]; echo "all 15 GLM-5.3 upstream fix checks present"
 
 # -----------------------------------------------------------------------------
 # 5. vllm-router (Rust). Router main needs rustc >= 1.91 (its vllm-tokenizer git
