@@ -71,7 +71,7 @@ RUN git clone --recursive "${AITER_REPO}" /tmp/aiter-src && \
     cd /tmp/aiter-src && git checkout "${AITER_REF}" && git submodule update --init --recursive && \
     (pip uninstall -y amd_aiter amd-aiter aiter 2>/dev/null || true) && \
     pip install --no-deps -U "flydsl==${FLYDSL_VERSION}" && \
-    pip install --no-build-isolation --no-deps -v . && \
+    AITER_USE_SYSTEM_TRITON=1 pip install --no-build-isolation --no-deps -v . && \
     echo "AITER=${AITER_REPO}@$(git rev-parse HEAD) flydsl==${FLYDSL_VERSION}" >> /app/versions.txt && \
     rm -rf /tmp/aiter-src /opt/vllm_cache/aiter_jit /root/.aiter
 
