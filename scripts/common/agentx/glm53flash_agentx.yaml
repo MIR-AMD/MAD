@@ -1,0 +1,25 @@
+# GLM-5.3 benchmark methodology, test 1 (agentx): three conformance workloads, each swept
+# over concurrency 1, 2, 4, 8 with 900 s per step, against GLM-5.3-Flash-FP8 1P/1D.
+serving:
+  model: auto
+  max_model_len: 700000
+  port: auto
+  server_metrics: auto
+
+run:
+  concurrency: [1, 2, 4, 8]
+  duration: 900
+  scenario: inferencex-agentx-mvp
+
+workloads:
+  - name: conformance_128k
+    source: profile
+    preset: conformance_128k
+
+  - name: conformance_256k
+    source: profile
+    preset: conformance_256k
+
+  - name: conformance_512k
+    source: profile
+    preset: conformance_512k

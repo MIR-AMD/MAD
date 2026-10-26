@@ -322,8 +322,8 @@ GLM-5.3-Flash-FP8-gfx942:
   tp_flags: ""
   # MTP goes on BOTH legs: the transferred KV cache groups (and the kpool tail) must match.
   prefill:
-    tp: "--enforce-eager --max-model-len 760000 --max-num-batched-tokens 16384 --no-enable-prefix-caching"
-    dp: "--enforce-eager --max-model-len 760000 --max-num-batched-tokens 16384 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
+    tp: "--enforce-eager --max-model-len 700000 --max-num-batched-tokens 16384 --no-enable-prefix-caching"
+    dp: "--enforce-eager --max-model-len 700000 --max-num-batched-tokens 16384 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
   decode:
-    tp: "--max-model-len 760000 --max-num-batched-tokens 16384 --max-num-seqs 64 --no-enable-prefix-caching"
-    dp: "--max-model-len 760000 --max-num-batched-tokens 16384 --max-num-seqs 64 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
+    tp: "--max-model-len 700000 --max-num-batched-tokens 16384 --max-num-seqs 64 --no-enable-prefix-caching"
+    dp: "--max-model-len 700000 --max-num-batched-tokens 16384 --max-num-seqs 64 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"

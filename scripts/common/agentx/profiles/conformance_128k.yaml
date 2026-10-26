@@ -1,0 +1,13 @@
+# conformance_256k with input lengths halved (GLM-5.3 benchmark methodology, 128k workload).
+# Only isl_p, clamps.isl and id_prefix differ from the 256k profile; osl and delay clamps
+# are restated from the methodology and equal the 256k values.
+name: conformance_128k
+preset: conformance_256k
+id_prefix: case128k
+
+isl_p:   [37000, 77500, 117500]
+
+clamps:
+  isl:   [1200, 122500]
+  osl:   [8, 20000]
+  delay: [1, 600]

@@ -37,6 +37,7 @@
 INFERENCEX_REPO="${INFERENCEX_REPO:-https://github.com/SemiAnalysisAI/InferenceX.git}"
 INFERENCEX_PIN="${AGENTIC_UTILS_PIN:-ef8a17ecf0c3679dc12020eddab3c1a36d285b58}"   # InferenceX main @ 2026-07-25
 AIPERF_PIN="${AIPERF_PIN:-0d2aa0572ac685943d38c580675c4a61023581d3}"             # utils/aiperf submodule (cquil11/aiperf-agentx-v1.0)
+TRANSFORMERS_PIN="${TRANSFORMERS_PIN:-b0eff172cae9c310340b184310cbf2d738f958c8}" # aiperf otherwise pulls transformers main
 
 set -o pipefail
 
@@ -120,6 +121,9 @@ install_agentic_deps() {
         -r "$INFMAX_WS/utils/agentic-benchmark/requirements.txt" \
         -e "$INFMAX_WS/utils/aiperf" \
         "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0" urllib3 requests
+    UV_CACHE_DIR="$AIPERF_UV_CACHE_DIR" "$AIPERF_UV_BIN" pip install --python "$AIPERF_PYTHON" \
+        "transformers @ git+https://github.com/huggingface/transformers.git@${TRANSFORMERS_PIN}" \
+        || agentic_die "transformers install at ${TRANSFORMERS_PIN} failed"
 
     [ -x "$AIPERF_CLI" ] && [ -x "$AIPERF_HF_CLI" ] || \
         agentic_die "isolated aiperf environment incomplete at $AIPERF_VENV"
