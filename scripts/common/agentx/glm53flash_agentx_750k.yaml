@@ -3,6 +3,8 @@
 # glm53flash_agentx.yaml. Steps are 1800 s (methodology: 900 s). conformance_512k at
 # concurrency 1 / 900 s runs first on the fresh server and anchors this deployment to the
 # 700000 one.
+# The GLM-5.3-Flash-FP8-gfx942 card serves --max-model-len 700000 on both legs; this suite
+# needs all four of those flags at 800000. serving.max_model_len below does not change them.
 serving:
   model: auto
   max_model_len: 800000
