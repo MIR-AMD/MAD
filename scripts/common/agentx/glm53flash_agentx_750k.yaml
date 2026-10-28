@@ -1,0 +1,28 @@
+# conformance_750k (AMD-defined extension of the GLM-5.3 benchmark methodology) against
+# GLM-5.3-Flash-FP8 1P/1D served at max-model-len 800000; otherwise the deployment of
+# glm53flash_agentx.yaml. Steps are 1800 s (methodology: 900 s). conformance_512k at
+# concurrency 1 / 900 s runs first on the fresh server and anchors this deployment to the
+# 700000 one.
+# The GLM-5.3-Flash-FP8-gfx942 card serves --max-model-len 700000 on both legs; this suite
+# needs all four of those flags at 800000. serving.max_model_len below does not change them.
+serving:
+  model: auto
+  max_model_len: 800000
+  port: auto
+  server_metrics: auto
+
+run:
+  concurrency: [1, 2, 4, 8]
+  duration: 1800
+  scenario: inferencex-agentx-mvp
+
+workloads:
+  - name: conformance_512k
+    source: profile
+    preset: conformance_512k
+    concurrency: [1]
+    duration: 900
+
+  - name: conformance_750k
+    source: profile
+    preset: conformance_750k

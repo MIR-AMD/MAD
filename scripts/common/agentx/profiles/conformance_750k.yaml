@@ -1,0 +1,20 @@
+# AMD-defined long-context extension of the GLM-5.3 benchmark methodology; not a customer
+# (ExplainX) parameter set and not a scaling of one. Turn, output, think-time and cache
+# structure are conformance_512k's; input lengths are set so >= 20% of requests exceed 512k.
+# Needs a server with max-model-len >= 800000: isl clamp + osl clamp = 800000, and aiperf
+# drops whole sessions whose peak exceeds --max-context-length.
+name: conformance_750k
+preset: conformance_512k
+id_prefix: case750k
+
+isl_p:   [450000, 640000, 750000]
+
+clamps:
+  isl:   [1200, 780000]
+  osl:   [8, 20000]
+  delay: [1, 600]
+
+# Restated without the 512k ISL P99 band override; default bands pass.
+verify:
+  turns_p: [5, 82, 144]
+  cache_target: 89
