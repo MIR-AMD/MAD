@@ -1,0 +1,26 @@
+# conformance_900k against GLM-5.3-Flash-FP8 1P/1D served at max-model-len 1048576;
+# otherwise the deployment of glm53flash_agentx.yaml. conformance_512k at concurrency 1 /
+# 900 s runs first on the fresh server and anchors this deployment to the 700000 one.
+# The GLM-5.3-Flash-FP8-gfx942 card serves --max-model-len 700000 on both legs; this suite
+# needs all four of those flags at 1048576. serving.max_model_len below does not change them.
+serving:
+  model: auto
+  max_model_len: 1048576
+  port: auto
+  server_metrics: auto
+
+run:
+  concurrency: [1, 2, 4, 8]
+  duration: 1800
+  scenario: inferencex-agentx-mvp
+
+workloads:
+  - name: conformance_512k
+    source: profile
+    preset: conformance_512k
+    concurrency: [1]
+    duration: 900
+
+  - name: conformance_900k
+    source: profile
+    preset: conformance_900k
