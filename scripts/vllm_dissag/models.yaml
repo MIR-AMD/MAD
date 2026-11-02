@@ -308,6 +308,7 @@ GLM-5.3-Flash-FP8-gfx942:
     VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "4096"
     VLLM_ALL2ALL_BACKEND: "allgather_reducescatter"
     DECODE_MORI_BACKEND: "allgather_reducescatter"
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "75"      # > the router's 50 s pool idle timeout (keep-alive race)
     MORIIO_READ_MODE: "1"                   # READ mode is the validated KV-transfer mode
     MORI_IO_CP_TIMEOUT_MS: "60000"          # in-worker CreateSession fails errno=11 under DP8 without it
     MORI_SHMEM_HEAP_SIZE: "8589934592"      # 8 GiB; the 16 GiB default costs KV on 192 GB GPUs
