@@ -328,7 +328,10 @@ def _resolve_workload_entry(entry, _visited=None):
     if src == "profile":
         prof = _profile_from_merged(merged, name)
         wl["profile"] = prof
-        wl["isl_tail"] = _isl_tail(prof)
+        if merged.get("isl_tail") is not None:
+            wl["isl_tail"] = int(merged["isl_tail"])
+        else:
+            wl["isl_tail"] = _isl_tail(prof)
     elif src == "hf":
         wl["loader"] = merged.get("loader", "")
         wl["isl_tail"] = _hf_isl_tail(wl["loader"])
